@@ -2,18 +2,16 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Image from "next/image";
-import { supabase } from "../lib/supabase";
+import { supabase } from "@/lib/supabase";
+import { useRouter } from "next/navigation";
 
 const TEMPLATE_DEVIS_ID = "1bMPPNhblzGb9HCXftPtYd-fwEx_gRKgb8WECfS2xs2c";
-const TEMPLATE_FACTURE_ID = "1OafmqnpTgBqwAGsxA0BWlc7TJ_OKvPFvsi1d4LznPGY";
-const APPS_SCRIPT_URL =
-  "https://script.google.com/macros/s/AKfycbweKy4ldF8p3j86I3PiDuLLFTYy3ws8u46Cb2f69fvg4Q7bmH0ljQ0-LC81EjixhRCh/exec";
 
 type Repair = {
   id: string;
   repair_type: string | null;
   estimated_duration: string | null;
-  status: "a_faire" | "en_cours" | "terminee";
+  status: "a_faire" | "en_cours" | "en_pause" | "terminee";
   comment: string | null;
   clients: {
     id: string;
@@ -64,7 +62,33 @@ function normalizePlateKey(input: string) {
   return (input || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
+async function readJsonSafe(res: Response) {
+  const contentType = res.headers.get("content-type") || "";
+  const raw = await res.text();
+
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} — ${raw.slice(0, 200)}`);
+  }
+
+  if (!contentType.includes("application/json")) {
+    throw new Error(
+      `Réponse non-JSON (content-type: ${contentType}) — ${raw.slice(0, 200)}`,
+    );
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    throw new Error(`JSON invalide — ${raw.slice(0, 200)}`);
+  }
+}
+
 export default function Home() {
+  const router = useRouter();
+
+  const [authLoading, setAuthLoading] = useState(true);
+  const [isAuthed, setIsAuthed] = useState(false);
+
   const [repairs, setRepairs] = useState<Repair[]>([]);
   const [loading, setLoading] = useState(false);
   const [query, setQuery] = useState("");
@@ -76,19 +100,18 @@ export default function Home() {
   const [saving, setSaving] = useState(false);
 
   const [showMecanoPanel, setShowMecanoPanel] = useState(false);
-  const [mecanoTab, setMecanoTab] = useState<
-    "devis" | "facture" | "entreprise"
-  >("devis");
+  const [mecanoTab, setMecanoTab] = useState<"devis" | "entreprise">("devis");
 
-  const [showGestionPanel, setShowGestionPanel] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [sending, setSending] = useState(false);
 
   const companyText = `BARTHAUX AUTO
-  Adresse : 9 Rue du Chauffour, 10700 Arcis sur Aube
-  Téléphone : 07.69.12.75.75
-  Email : barthauxauto2.0gmail.com
-  SIRET : 99088236700016
-  APE : 4520A
-  `;
+Adresse : 9 Rue du Chauffour, 10700 Arcis sur Aube
+Téléphone : 07.69.12.75.75
+Email : barthauxauto2.0@gmail.com
+SIRET : 99088236700016
+APE : 4520A
+`;
 
   /** 🧾 Devis */
   const [quotePlate, setQuotePlate] = useState("");
@@ -102,6 +125,45 @@ export default function Home() {
     name: string;
     vehicle: string | null;
   } | null>(null);
+
+  const [lastQuote, setLastQuote] = useState<{
+    id: string;
+    quoteNumber: number;
+    pdfFileId: string | null;
+    clientEmail: string | null;
+  } | null>(null);
+
+  const [commentDrafts, setCommentDrafts] = useState<Record<string, string>>(
+    {},
+  );
+  const [savingCommentId, setSavingCommentId] = useState<string | null>(null);
+  const [commentMsg, setCommentMsg] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    let sub: any;
+
+    async function check() {
+      const { data } = await supabase.auth.getSession();
+      const ok = Boolean(data.session);
+
+      setIsAuthed(ok);
+      setAuthLoading(false);
+
+      if (!ok) router.replace("/login");
+
+      sub = supabase.auth.onAuthStateChange((_event, session) => {
+        const authed = Boolean(session);
+        setIsAuthed(authed);
+        if (!authed) router.replace("/login");
+      });
+    }
+
+    check();
+
+    return () => {
+      if (sub?.data?.subscription) sub.data.subscription.unsubscribe();
+    };
+  }, [router]);
 
   useEffect(() => {
     async function checkClient() {
@@ -186,9 +248,49 @@ export default function Home() {
     fetchRepairs();
   }
 
+  async function pauseRepair(id: string) {
+    await supabase.from("repairs").update({ status: "en_pause" }).eq("id", id);
+    fetchRepairs();
+  }
+
+  async function resumeRepair(id: string) {
+    await supabase.from("repairs").update({ status: "en_cours" }).eq("id", id);
+    fetchRepairs();
+  }
+
   async function finishRepair(id: string) {
     await supabase.rpc("complete_repair", { p_repair_id: id });
     fetchRepairs();
+  }
+
+  async function saveRepairComment(repairId: string) {
+    try {
+      setSavingCommentId(repairId);
+
+      const draft = (commentDrafts[repairId] ?? "").trim();
+
+      const { error } = await supabase
+        .from("repairs")
+        .update({ comment: draft.length ? draft : null })
+        .eq("id", repairId);
+
+      if (error) throw error;
+
+      // refresh liste
+      await fetchRepairs();
+
+      setCommentMsg((prev) => ({
+        ...prev,
+        [repairId]: "✅ Commentaire enregistré",
+      }));
+    } catch (e: any) {
+      setCommentMsg((prev) => ({
+        ...prev,
+        [repairId]: `❌ ${e?.message ?? "Erreur enregistrement"}`,
+      }));
+    } finally {
+      setSavingCommentId(null);
+    }
   }
 
   function openModal() {
@@ -233,7 +335,7 @@ export default function Home() {
     });
   }, [query, repairs]);
 
-  /** ✅ CREATION REPARATION + CLIENT (plate_normalized rempli) */
+  /** ✅ CREATION REPARATION + CLIENT */
   async function createRepair() {
     setFormError(null);
     if (!canSave) {
@@ -264,7 +366,7 @@ export default function Home() {
       if (findErr) throw findErr;
       clientId = foundByNorm?.[0]?.id ?? null;
 
-      // 2) fallback: chercher par plate (au cas où un ancien client n'a pas plate_normalized)
+      // 2) fallback: chercher par plate
       if (!clientId) {
         const { data: foundByPlate } = await supabase
           .from("clients")
@@ -274,7 +376,7 @@ export default function Home() {
         clientId = foundByPlate?.[0]?.id ?? null;
       }
 
-      // 3) créer client si besoin (✅ cette fois on écrit plate_normalized)
+      // 3) créer client si besoin
       if (!clientId) {
         const { data: insertedClient, error: insertClientErr } = await supabase
           .from("clients")
@@ -294,7 +396,7 @@ export default function Home() {
         if (insertClientErr) throw insertClientErr;
         clientId = insertedClient.id;
       } else {
-        // mise à jour douce + on corrige plate_normalized si manquant
+        // mise à jour douce
         const { error: updErr } = await supabase
           .from("clients")
           .update({
@@ -331,10 +433,9 @@ export default function Home() {
     }
   }
 
-  function openMecano(tab: "devis" | "facture" | "entreprise") {
+  function openMecano(tab: "devis" | "entreprise") {
     setMecanoTab(tab);
     setShowMecanoPanel(true);
-    setShowGestionPanel(false);
   }
 
   /** 🧾 Devis helpers */
@@ -374,88 +475,123 @@ export default function Home() {
     return Number(computedPartsTotal) + (Number(laborCost) || 0);
   }, [computedPartsTotal, laborCost]);
 
-  {
-    quotePlate && (
-      <div className="text-sm mt-2">
-        {quoteClientInfo ? (
-          <div className="text-emerald-400 font-bold">
-            ✅ Client trouvé : {quoteClientInfo.name}
-            {quoteClientInfo.vehicle ? ` — ${quoteClientInfo.vehicle}` : ""}
-          </div>
-        ) : (
-          <div className="text-red-400 font-bold">❌ Aucun client trouvé</div>
-        )}
-      </div>
-    );
-  }
+  /** 🔎 Trouver clientId par plaque (norm + fallback) */
+  async function getClientIdForPlate(
+    plateInput: string,
+  ): Promise<string | null> {
+    const plateKey = normalizePlateKey(plateInput);
+    const platePretty = normalizePlate(plateInput);
+    if (!plateKey) return null;
 
-  /** ✅ CREATION DEVIS (recherche client par plate_normalized) */
-  async function createQuote() {
-    setQuoteMessage(null);
-    const plateKey = normalizePlateKey(quotePlate);
-
-    if (!plateKey) {
-      setQuoteMessage("⚠️ Plaque obligatoire.");
-      return;
-    }
-
-    // chercher client par plate_normalized, fallback par plate pretty
-    const platePretty = normalizePlate(quotePlate);
-
-    let clientId: string | null = null;
-
-    // 1) match par plate_normalized (si la DB la calcule bien)
     const { data: c1 } = await supabase
       .from("clients")
       .select("id")
       .eq("plate_normalized", plateKey)
       .limit(1);
 
-    clientId = c1?.[0]?.id ?? null;
+    const id1 = c1?.[0]?.id ?? null;
+    if (id1) return id1;
 
-    // 2) fallback: match par plate (format AA-123-BB)
-    if (!clientId) {
-      const { data: c2 } = await supabase
-        .from("clients")
-        .select("id")
-        .eq("plate", platePretty)
-        .limit(1);
+    const { data: c2 } = await supabase
+      .from("clients")
+      .select("id")
+      .eq("plate", platePretty)
+      .limit(1);
 
-      clientId = c2?.[0]?.id ?? null;
-    }
+    return c2?.[0]?.id ?? null;
+  }
 
-    if (!clientId) {
-      setQuoteMessage("❌ Aucun client trouvé pour cette plaque.");
-      return;
-    }
+  /** 🔎 Charger le dernier devis du client (utile pour ré-envoyer plus tard) */
+  async function loadLatestQuoteForCurrentPlate() {
+    const clientId = await getClientIdForPlate(quotePlate);
+    if (!clientId) return null;
 
-    const { data: newQuote, error: quoteError } = await supabase
+    const { data, error } = await supabase
       .from("quotes")
-      .insert({
-        client_id: clientId,
-        labor_cost: Number(laborCost) || 0,
-        status: "brouillon",
-      })
-      .select()
+      .select("id, quote_number, pdf_file_id, clients(email)")
+      .eq("client_id", clientId)
+      .order("created_at", { ascending: false })
+      .limit(1)
       .single();
 
-    if (quoteError || !newQuote) {
-      setQuoteMessage(
-        `❌ Erreur création devis : ${quoteError?.message ?? ""}`,
+    if (error || !data) return null;
+
+    const email = (data as any)?.clients?.email ?? null;
+
+    return {
+      id: data.id as string,
+      quoteNumber: data.quote_number as number,
+      pdfFileId: (data as any).pdf_file_id as string | null,
+      clientEmail: email as string | null,
+    };
+  }
+
+  /** ✅ CREATION DEVIS */
+  async function createQuote() {
+    setQuoteMessage(null);
+    if (creating) return;
+
+    setCreating(true);
+
+    try {
+      const plateKey = normalizePlateKey(quotePlate);
+      if (!plateKey) {
+        setQuoteMessage("⚠️ Plaque obligatoire.");
+        return;
+      }
+
+      const platePretty = normalizePlate(quotePlate);
+
+      const clientId = await getClientIdForPlate(quotePlate);
+      if (!clientId) {
+        setQuoteMessage("❌ Aucun client trouvé pour cette plaque.");
+        return;
+      }
+
+      // 1️⃣ On demande le prochain numéro à la base
+      const { data: numberData, error: numberError } = await supabase.rpc(
+        "generate_quote_number",
       );
-      return;
-    }
 
-    for (const item of quoteItems) {
-      if (!item.description?.trim()) continue;
-      await supabase.from("quote_items").insert({
-        quote_id: newQuote.id,
-        description: item.description,
-        unit_price: Number(item.unit_price) || 0,
-        quantity: Number(item.quantity) || 0,
-      });
+      if (numberError || !numberData) {
+        setQuoteMessage("❌ Impossible de générer le numéro de devis");
+        return;
+      }
 
-      // 🔥 4) Appel Apps Script pour générer Google Doc + PDF
+      const quoteNumber = numberData;
+
+      // 2️⃣ On crée le devis avec ce numéro
+      const { data: newQuote, error: quoteError } = await supabase
+        .from("quotes")
+        .insert({
+          client_id: clientId,
+          labor_cost: Number(laborCost) || 0,
+          status: "brouillon",
+          quote_number: quoteNumber,
+        })
+        .select()
+        .single();
+
+      if (quoteError || !newQuote) {
+        setQuoteMessage("❌ Erreur création devis");
+        return;
+      }
+
+      if (quoteError || !newQuote) {
+        setQuoteMessage("❌ Erreur création devis");
+        return;
+      }
+
+      for (const item of quoteItems) {
+        if (!item.description?.trim()) continue;
+
+        await supabase.from("quote_items").insert({
+          quote_id: newQuote.id,
+          description: item.description,
+          unit_price: Number(item.unit_price) || 0,
+          quantity: Number(item.quantity) || 0,
+        });
+      }
 
       const { data: clientData } = await supabase
         .from("clients")
@@ -490,50 +626,140 @@ export default function Home() {
         },
       };
 
-      const response = await fetch(APPS_SCRIPT_URL, {
+      const response = await fetch("/api/apps-script", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
-      const result = await response.json();
+      const result = await readJsonSafe(response);
 
       if (!result.ok) {
-        setQuoteMessage("❌ Erreur génération document");
+        setQuoteMessage(`❌ ${result.error ?? "Erreur Apps Script"}`);
         return;
       }
 
-      // 💾 Sauvegarder URLs dans Supabase
       await supabase
         .from("quotes")
         .update({
           doc_url: result.docUrl,
           pdf_url: result.pdfUrl,
+          pdf_file_id: result.pdfFileId ?? null,
         })
         .eq("id", newQuote.id);
 
-      setQuoteMessage("✅ Devis généré !");
+      setLastQuote({
+        id: newQuote.id,
+        quoteNumber: newQuote.quote_number,
+        pdfFileId: result.pdfFileId ?? null,
+        clientEmail: clientData.email ?? null,
+      });
 
-      // Ouvrir le PDF automatiquement
       window.open(result.pdfUrl, "_blank");
+      setQuoteMessage("✅ Devis généré !");
+    } catch (e: any) {
+      setQuoteMessage(`❌ Oups : ${e?.message ?? "Erreur inconnue"}`);
+    } finally {
+      setCreating(false);
     }
-
-    setQuoteMessage(`✅ Devis créé ! (N° ${newQuote.quote_number ?? "—"})`);
-    setQuoteItems([{ description: "", unit_price: 0, quantity: 1 }]);
-    setLaborCost(0);
   }
 
-  function factureStub() {
-    alert(
-      `🧾 Facture (à brancher Apps Script)\nTemplate: ${TEMPLATE_FACTURE_ID}`,
-    );
+  /** ✅ ENVOI DEVIS (réutilisable même après coup) */
+  async function sendQuoteEmail() {
+    setQuoteMessage(null);
+    if (sending) return;
+
+    setSending(true);
+
+    try {
+      // 1) Si on n’a pas lastQuote en mémoire, on le recharge depuis la DB
+      let quote = lastQuote;
+      if (!quote) {
+        quote = await loadLatestQuoteForCurrentPlate();
+        if (quote) setLastQuote(quote);
+      }
+
+      if (!quote) {
+        setQuoteMessage(
+          "⚠️ Aucun devis trouvé pour ce client. Génère d’abord un devis.",
+        );
+        return;
+      }
+
+      if (!quote.clientEmail) {
+        setQuoteMessage("⚠️ Aucun email client enregistré.");
+        return;
+      }
+
+      // 2) Si le pdfFileId manque (cas anciens), on retente depuis la DB
+      if (!quote.pdfFileId) {
+        const refreshed = await loadLatestQuoteForCurrentPlate();
+        if (refreshed?.pdfFileId) {
+          quote = refreshed;
+          setLastQuote(refreshed);
+        }
+      }
+
+      if (!quote.pdfFileId) {
+        setQuoteMessage(
+          "⚠️ PDF non prêt (pdfFileId manquant). Regénère le devis.",
+        );
+        return;
+      }
+
+      const payload = {
+        action: "send_quote_email",
+        payload: {
+          toEmail: quote.clientEmail,
+          quoteNumber: quote.quoteNumber,
+          pdfFileId: quote.pdfFileId,
+        },
+      };
+
+      const response = await fetch("/api/apps-script", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const result = await readJsonSafe(response);
+
+      if (!result.ok) {
+        setQuoteMessage(`❌ Apps Script: ${result.error ?? "Erreur inconnue"}`);
+        return;
+      }
+
+      if (result.emailSent) {
+        setQuoteMessage("✅ Email envoyé ! 📧");
+      } else {
+        setQuoteMessage(
+          `⚠️ Email non envoyé : ${result.emailError ?? "raison inconnue"}`,
+        );
+      }
+    } catch (e: any) {
+      setQuoteMessage(`❌ Oups : ${e?.message ?? "Erreur inconnue"}`);
+    } finally {
+      setSending(false);
+    }
   }
 
   function openDevisForPlate(plate: string) {
     setQuotePlate(normalizePlate(plate));
     setMecanoTab("devis");
     setShowMecanoPanel(true);
-    setShowGestionPanel(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center">
+        <div className="text-white/70">⏳ Vérification accès…</div>
+      </div>
+    );
+  }
+
+  if (!isAuthed) {
+    return null; // évite un flash de la page avant la redirection
   }
 
   return (
@@ -550,15 +776,13 @@ export default function Home() {
             />
             <div>
               <div className="font-extrabold text-lg">Barthaux Auto</div>
-              <div className="text-white/60 text-sm">
-                Accueil = Réparations ✅
-              </div>
+              <div className="text-white/60 text-sm">Bienvenue :)</div>
             </div>
           </div>
 
           <div className="flex gap-3">
             <button
-              className="px-4 py-3 rounded-2xl font-extrabold bg-amber-400 text-slate-950 shadow-lg hover:opacity-90"
+              className="px-4 py-3 rounded-2xl font-extrabold bg-emerald-400 text-slate-950 shadow-lg hover:opacity-90"
               onClick={() => openMecano("devis")}
               type="button"
             >
@@ -568,12 +792,23 @@ export default function Home() {
             <button
               className="px-4 py-3 rounded-2xl font-extrabold bg-white/10 border border-white/10 shadow-lg hover:bg-white/15"
               onClick={() => {
-                setShowGestionPanel((v) => !v);
                 setShowMecanoPanel(false);
               }}
               type="button"
             >
               📊 Accès Gestion
+            </button>
+
+            <button
+              onClick={async () => {
+                await supabase.auth.signOut();
+                router.replace("/login");
+                router.refresh();
+              }}
+              className="px-4 py-3 rounded-2xl font-extrabold bg-white/10 border border-white/10 shadow-lg hover:bg-white/15"
+              type="button"
+            >
+              Déconnexion
             </button>
           </div>
         </div>
@@ -583,9 +818,7 @@ export default function Home() {
             <h1 className="text-3xl font-extrabold">
               🔧 Accueil — Réparations
             </h1>
-            <p className="text-white/70 mt-1">
-              Création + suivi des fiches (toujours ici) 💪
-            </p>
+            <p className="text-white/70 mt-1">Alors ? On s'y met ?</p>
           </div>
 
           <div className="flex-1 max-w-md">
@@ -599,7 +832,7 @@ export default function Home() {
 
           <button
             onClick={openModal}
-            className="px-4 py-3 rounded-2xl font-extrabold bg-amber-400 text-slate-950 shadow-lg hover:opacity-90"
+            className="px-4 py-3 rounded-2xl font-extrabold bg-emerald-400 text-slate-950 shadow-lg hover:opacity-90"
             type="button"
           >
             ➕ Créer une réparation
@@ -612,8 +845,7 @@ export default function Home() {
               <div>
                 <div className="text-xl font-extrabold">🔧 Accès Mécano</div>
                 <div className="text-white/60 text-sm">
-                  Devis • Factures • Infos entreprise (sans toucher aux
-                  réparations)
+                  Devis • Infos entreprise (sans toucher aux réparations)
                 </div>
               </div>
               <button
@@ -631,7 +863,7 @@ export default function Home() {
                 className={[
                   "px-3 py-2 rounded-2xl font-extrabold border",
                   mecanoTab === "devis"
-                    ? "bg-amber-400 text-slate-950 border-amber-300"
+                    ? "bg-emerald-400 text-slate-950 border-emerald-300"
                     : "bg-white/10 border-white/10 hover:bg-white/15",
                 ].join(" ")}
                 type="button"
@@ -640,24 +872,11 @@ export default function Home() {
               </button>
 
               <button
-                onClick={() => setMecanoTab("facture")}
-                className={[
-                  "px-3 py-2 rounded-2xl font-extrabold border",
-                  mecanoTab === "facture"
-                    ? "bg-amber-400 text-slate-950 border-amber-300"
-                    : "bg-white/10 border-white/10 hover:bg-white/15",
-                ].join(" ")}
-                type="button"
-              >
-                🧾 Facture
-              </button>
-
-              <button
                 onClick={() => setMecanoTab("entreprise")}
                 className={[
                   "px-3 py-2 rounded-2xl font-extrabold border",
                   mecanoTab === "entreprise"
-                    ? "bg-amber-400 text-slate-950 border-amber-300"
+                    ? "bg-emerald-400 text-slate-950 border-emerald-300"
                     : "bg-white/10 border-white/10 hover:bg-white/15",
                 ].join(" ")}
                 type="button"
@@ -686,6 +905,23 @@ export default function Home() {
                     }
                   />
                 </div>
+
+                {quotePlate && (
+                  <div className="text-sm -mt-1">
+                    {quoteClientInfo ? (
+                      <div className="text-emerald-400 font-extrabold">
+                        ✅ Client trouvé : {quoteClientInfo.name}
+                        {quoteClientInfo.vehicle
+                          ? ` — ${quoteClientInfo.vehicle}`
+                          : ""}
+                      </div>
+                    ) : (
+                      <div className="text-red-400 font-extrabold">
+                        ❌ Aucun client trouvé
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   <div className="text-sm font-bold text-white/80">Pièces</div>
@@ -775,33 +1011,45 @@ export default function Home() {
                   </div>
                 </div>
 
-                <button
-                  onClick={createQuote}
-                  className="w-full px-4 py-3 rounded-2xl font-extrabold bg-amber-400 text-slate-950 hover:opacity-90"
-                  type="button"
-                >
-                  ✅ Créer le devis
-                </button>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <button
+                    onClick={createQuote}
+                    disabled={creating}
+                    className={[
+                      "w-full px-4 py-3 rounded-2xl font-extrabold transition",
+                      creating
+                        ? "bg-emerald-300 text-slate-950 opacity-70 cursor-not-allowed"
+                        : "bg-emerald-400 text-slate-950 hover:opacity-90",
+                    ].join(" ")}
+                    type="button"
+                  >
+                    {creating
+                      ? "⏳ Génération en cours..."
+                      : "🧾 Générer le devis (PDF)"}
+                  </button>
+
+                  <button
+                    onClick={sendQuoteEmail}
+                    disabled={sending || creating || !quotePlate}
+                    className={[
+                      "w-full px-4 py-3 rounded-2xl font-extrabold transition",
+                      sending || creating || !quotePlate
+                        ? "bg-white/10 text-white/40 cursor-not-allowed"
+                        : "bg-sky-400 text-slate-950 hover:opacity-90",
+                    ].join(" ")}
+                    type="button"
+                  >
+                    {sending
+                      ? "⏳ Envoi en cours..."
+                      : creating
+                        ? "⏳ Attends la génération..."
+                        : "📧 Envoyer le devis (dernier PDF)"}
+                  </button>
+                </div>
 
                 {quoteMessage && (
                   <div className="text-sm text-white/80">{quoteMessage}</div>
                 )}
-              </div>
-            )}
-
-            {mecanoTab === "facture" && (
-              <div className="mt-4 p-4 rounded-2xl bg-black/30 border border-white/10">
-                <div className="font-extrabold">🧾 Facture</div>
-                <div className="text-white/60 text-sm mt-1">
-                  Template Drive : {TEMPLATE_FACTURE_ID}
-                </div>
-                <button
-                  onClick={factureStub}
-                  className="mt-3 px-4 py-3 rounded-2xl font-extrabold bg-emerald-400 text-slate-950 hover:opacity-90"
-                  type="button"
-                >
-                  ➕ Créer facture (V1)
-                </button>
               </div>
             )}
 
@@ -819,7 +1067,7 @@ export default function Home() {
                       await navigator.clipboard.writeText(companyText);
                       alert("✅ Infos copiées !");
                     }}
-                    className="px-4 py-3 rounded-2xl font-extrabold bg-amber-400 text-slate-950 hover:opacity-90"
+                    className="px-4 py-3 rounded-2xl font-extrabold bg-emerald-400 text-slate-950 hover:opacity-90"
                     type="button"
                   >
                     📋 Copier
@@ -831,27 +1079,6 @@ export default function Home() {
                 </pre>
               </div>
             )}
-          </div>
-        )}
-
-        {showGestionPanel && (
-          <div className="mt-4 p-5 rounded-3xl bg-white/5 border border-white/10">
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="text-xl font-extrabold">📊 Accès Gestion</div>
-                <div className="text-white/60 text-sm">
-                  Dashboard • Clients • Devis • Factures • Paramètres (à faire
-                  après)
-                </div>
-              </div>
-              <button
-                onClick={() => setShowGestionPanel(false)}
-                className="px-3 py-2 rounded-xl bg-white/10 border border-white/10 hover:bg-white/15"
-                type="button"
-              >
-                ✖️ Fermer
-              </button>
-            </div>
           </div>
         )}
 
@@ -874,7 +1101,7 @@ export default function Home() {
                 className={[
                   "p-5 rounded-2xl border shadow-lg cursor-pointer transition-all",
                   repair.status === "en_cours"
-                    ? "bg-amber-400/10 border-amber-300/40"
+                    ? "bg-emerald-400/10 border-amber-300/40"
                     : "bg-white/5 border-white/10",
                 ].join(" ")}
                 style={
@@ -895,7 +1122,11 @@ export default function Home() {
                   </div>
 
                   <div className="text-sm font-bold">
-                    {repair.status === "a_faire" ? "🟠 À faire" : "🔵 En cours"}
+                    {repair.status === "a_faire"
+                      ? "🟠 À faire"
+                      : repair.status === "en_pause"
+                        ? "⏸️ En pause"
+                        : "🔵 En cours"}
                   </div>
                 </div>
 
@@ -919,9 +1150,50 @@ export default function Home() {
                       </p>
                     )}
 
-                    {repair.comment && (
-                      <p className="text-white/60">💬 {repair.comment}</p>
-                    )}
+                    <div className="pt-2 space-y-2">
+                      <div className="text-sm font-bold text-white/80">
+                        💬 Commentaire mécano
+                      </div>
+                      <textarea
+                        className="w-full px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none min-h-[90px]"
+                        placeholder="Note rapide : pièces à commander, blocage, retour client, etc."
+                        value={commentDrafts[repair.id] ?? repair.comment ?? ""}
+                        onClick={(e) => e.stopPropagation()}
+                        onMouseDown={(e) => e.stopPropagation()}
+                        onChange={(e) =>
+                          setCommentDrafts((prev) => ({
+                            ...prev,
+                            [repair.id]: e.target.value,
+                          }))
+                        }
+                      />
+                      <div className="flex items-center gap-3">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            saveRepairComment(repair.id);
+                          }}
+                          disabled={savingCommentId === repair.id}
+                          className={[
+                            "px-4 py-2 rounded-xl font-bold transition",
+                            savingCommentId === repair.id
+                              ? "bg-white/10 text-white/40 cursor-not-allowed"
+                              : "bg-emerald-400 text-slate-950 hover:opacity-90",
+                          ].join(" ")}
+                          type="button"
+                        >
+                          {savingCommentId === repair.id
+                            ? "⏳ Enregistrement..."
+                            : "💾 Enregistrer"}
+                        </button>
+
+                        {commentMsg[repair.id] && (
+                          <div className="text-sm text-white/70">
+                            {commentMsg[repair.id]}
+                          </div>
+                        )}
+                      </div>
+                    </div>
 
                     <div className="flex flex-wrap gap-2 pt-2">
                       {repair.status === "a_faire" && (
@@ -936,13 +1208,38 @@ export default function Home() {
                           🔵 Passer en cours
                         </button>
                       )}
+                      {repair.status === "en_cours" && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            pauseRepair(repair.id);
+                          }}
+                          className="px-3 py-2 rounded-xl bg-sky-400 text-slate-950 font-bold hover:opacity-90 inline-flex items-center gap-2"
+                          type="button"
+                        >
+                          ⏸️ Pause
+                        </button>
+                      )}
+
+                      {repair.status === "en_pause" && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            resumeRepair(repair.id);
+                          }}
+                          className="px-3 py-2 rounded-xl bg-sky-400 text-slate-950 font-bold hover:opacity-90 inline-flex items-center gap-2"
+                          type="button"
+                        >
+                          ▶️ Reprendre
+                        </button>
+                      )}
 
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
                           openDevisForPlate(repair.clients.plate);
                         }}
-                        className="px-3 py-2 rounded-xl bg-amber-400 text-slate-950 font-bold hover:opacity-90"
+                        className="px-3 py-2 rounded-xl bg-emerald-400 text-slate-950 font-bold hover:opacity-90"
                         type="button"
                       >
                         🧾 Devis
@@ -1080,7 +1377,7 @@ export default function Home() {
                     className={[
                       "px-5 py-3 rounded-2xl font-extrabold shadow-lg",
                       canSave && !saving
-                        ? "bg-amber-400 text-slate-950 hover:opacity-90"
+                        ? "bg-emerald-400 text-slate-950 hover:opacity-90"
                         : "bg-white/10 text-white/40 cursor-not-allowed",
                     ].join(" ")}
                     type="button"
@@ -1100,9 +1397,9 @@ export default function Home() {
         <style>
           {`
             @keyframes pulseBorder {
-              0% { box-shadow: 0 0 0 rgba(251, 191, 36, 0.0); }
-              50% { box-shadow: 0 0 18px rgba(251, 191, 36, 0.45); }
-              100% { box-shadow: 0 0 0 rgba(251, 191, 36, 0.0); }
+              0% { box-shadow: 0 0 0 rgba(16, 185, 129, 0.0); }
+              50% { box-shadow: 0 0 18px rgba(16, 185, 129, 0.55); }
+              100% { box-shadow: 0 0 0 rgba(16, 185, 129, 0.0); }
             }
           `}
         </style>
