@@ -645,6 +645,8 @@ APE : 4520A
           doc_url: result.docUrl,
           pdf_url: result.pdfUrl,
           pdf_file_id: result.pdfFileId ?? null,
+          doc_id: result.docId ?? null,
+          folder_id: result.folderId ?? null,
         })
         .eq("id", newQuote.id);
 
