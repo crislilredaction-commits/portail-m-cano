@@ -1564,6 +1564,88 @@ export default function GestionPage() {
 
     return normalized;
   }
+
+  async function deleteInvoice(inv: InvoiceRow) {
+    if (
+      !confirm(
+        `Supprimer la facture F-${String(inv.invoice_number).padStart(6, "0")} ?`,
+      )
+    )
+      return;
+
+    try {
+      // 1) lignes
+      const { error: itErr } = await supabase
+        .from("invoice_items")
+        .delete()
+        .eq("invoice_id", inv.id);
+      if (itErr) throw itErr;
+
+      // 2) facture
+      const { error: invErr } = await supabase
+        .from("invoices")
+        .delete()
+        .eq("id", inv.id);
+      if (invErr) throw invErr;
+
+      await fetchLatestInvoices();
+    } catch (e: any) {
+      alert("❌ Erreur suppression facture : " + (e?.message ?? "Erreur"));
+    }
+  }
+
+  async function deleteQuoteFull(q: QuoteRow) {
+    if (
+      !confirm(
+        `Supprimer le devis D-${String(q.quote_number).padStart(6, "0")} ?`,
+      )
+    )
+      return;
+
+    try {
+      // 1) lignes
+      const { error: itErr } = await supabase
+        .from("quote_items")
+        .delete()
+        .eq("quote_id", q.id);
+      if (itErr) throw itErr;
+
+      // 2) devis
+      const { error: qErr } = await supabase
+        .from("quotes")
+        .delete()
+        .eq("id", q.id);
+      if (qErr) throw qErr;
+
+      await fetchLatestQuotes();
+    } catch (e: any) {
+      alert("❌ Erreur suppression devis : " + (e?.message ?? "Erreur"));
+    }
+  }
+
+  async function deleteClient(c: ClientRow) {
+    const fullName =
+      `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() || "Client";
+    if (
+      !confirm(
+        `Supprimer ${fullName} (${c.plate ?? "sans plaque"}) ?\n⚠️ À faire seulement si ses devis/factures sont supprimés.`,
+      )
+    )
+      return;
+
+    try {
+      const { error } = await supabase.from("clients").delete().eq("id", c.id);
+      if (error) throw error;
+
+      await fetchLatestClients();
+    } catch (e: any) {
+      alert(
+        "❌ Suppression client impossible (probablement lié à des devis/factures/réparations).\n" +
+          (e?.message ?? "Erreur"),
+      );
+    }
+  }
+
   const fetchLatestClients = useCallback(async () => {
     setClientsLoading(true);
     setClientsError(null);
@@ -1847,7 +1929,7 @@ export default function GestionPage() {
                                   {c.email || "—"}
                                 </td>
                                 <td className="px-4 py-3">
-                                  <div className="flex justify-center">
+                                  <div className="flex justify-center gap-2">
                                     <button
                                       onClick={() => openEditClient(c)}
                                       className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 font-extrabold"
@@ -1855,6 +1937,15 @@ export default function GestionPage() {
                                       title="Modifier"
                                     >
                                       ✏️
+                                    </button>
+
+                                    <button
+                                      onClick={() => deleteClient(c)}
+                                      className="px-3 py-2 rounded-xl bg-red-500 text-white hover:opacity-90 font-extrabold"
+                                      type="button"
+                                      title="Supprimer"
+                                    >
+                                      🗑
                                     </button>
                                   </div>
                                 </td>
@@ -2102,7 +2193,7 @@ export default function GestionPage() {
 
                                 <button
                                   disabled={isBusy}
-                                  onClick={() => deleteQuote(q)}
+                                  onClick={() => deleteQuoteFull(q)}
                                   className={cn(
                                     "px-3 py-2 rounded-xl font-bold",
                                     isBusy
@@ -2380,6 +2471,14 @@ export default function GestionPage() {
                                   —
                                 </span>
                               )}
+                              <button
+                                onClick={() => deleteInvoice(inv)}
+                                className="px-3 py-2 rounded-xl bg-red-500 text-white hover:opacity-90 font-bold"
+                                type="button"
+                                title="Supprimer"
+                              >
+                                🗑
+                              </button>
                             </div>
                           </td>
                         </tr>
