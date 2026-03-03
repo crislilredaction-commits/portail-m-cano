@@ -1245,58 +1245,133 @@ APE : 4520A
 
         {/* Modal new repair */}
         {isOpen && (
-          <div className="fixed inset-0 z-50 bg-black/60 overflow-y-auto">
-            <div className="min-h-[100dvh] flex items-end sm:items-center justify-center p-4">
-              <div className="w-full max-w-xl rounded-3xl bg-slate-900 border border-white/10 shadow-2xl max-h-[calc(100dvh-2rem)] overflow-hidden">
-                <div className="p-5 border-b border-white/10 flex items-center justify-between">
-                  <h3 className="text-xl font-extrabold">
-                    ➕ Nouvelle réparation
-                  </h3>
+          <div className="fixed inset-0 bg-black/60 z-50 p-4 flex items-start sm:items-center justify-center">
+            <div className="w-full max-w-xl rounded-3xl bg-slate-900 border border-white/10 shadow-2xl max-h-[calc(100vh-2rem)] overflow-hidden">
+              {/* Header sticky */}
+              <div className="p-5 border-b border-white/10 flex items-center justify-between sticky top-0 bg-slate-900 z-10">
+                <h3 className="text-xl font-extrabold">
+                  ➕ Nouvelle réparation
+                </h3>
+                <button
+                  onClick={closeModal}
+                  className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15"
+                  type="button"
+                >
+                  ✖️
+                </button>
+              </div>
+
+              {/* Body scrollable */}
+              <div className="p-5 space-y-4 overflow-y-auto max-h-[calc(100vh-2rem-84px)]">
+                {formError && (
+                  <div className="p-3 rounded-2xl bg-red-500/20 border border-red-400/30 text-red-100">
+                    {formError}
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <input
+                    className="px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none"
+                    placeholder="👤 Prénom"
+                    value={form.first_name}
+                    onChange={(e) => updateField("first_name", e.target.value)}
+                  />
+                  <input
+                    className="px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none"
+                    placeholder="👤 Nom"
+                    value={form.last_name}
+                    onChange={(e) => updateField("last_name", e.target.value)}
+                  />
+                  <input
+                    className="px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none md:col-span-2"
+                    placeholder="🏠 Adresse"
+                    value={form.address}
+                    onChange={(e) => updateField("address", e.target.value)}
+                  />
+                  <input
+                    className="px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none"
+                    placeholder="📧 Email"
+                    value={form.email}
+                    onChange={(e) => updateField("email", e.target.value)}
+                  />
+                  <input
+                    className="px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none"
+                    placeholder="☎️ Téléphone"
+                    value={form.phone}
+                    onChange={(e) => updateField("phone", e.target.value)}
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <input
+                    className="px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none font-bold tracking-wider"
+                    placeholder="🚗 Plaque (ex: AA-123-SS)"
+                    value={form.plate}
+                    onChange={(e) =>
+                      updateField("plate", normalizePlate(e.target.value))
+                    }
+                  />
+                  <input
+                    className="px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none"
+                    placeholder="🚙 Type véhicule (ex: Clio 2)"
+                    value={form.vehicle_type}
+                    onChange={(e) =>
+                      updateField("vehicle_type", e.target.value)
+                    }
+                  />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <input
+                    className="px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none"
+                    placeholder="🔧 Type réparation (ex: Freins)"
+                    value={form.repair_type}
+                    onChange={(e) => updateField("repair_type", e.target.value)}
+                  />
+                  <input
+                    className="px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none"
+                    placeholder="⏱️ Durée estimée (ex: 1h)"
+                    value={form.estimated_duration}
+                    onChange={(e) =>
+                      updateField("estimated_duration", e.target.value)
+                    }
+                  />
+                </div>
+
+                <textarea
+                  className="w-full px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none min-h-[90px]"
+                  placeholder="💬 Commentaire (optionnel)"
+                  value={form.comment}
+                  onChange={(e) => updateField("comment", e.target.value)}
+                />
+
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2">
                   <button
                     onClick={closeModal}
-                    className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15"
+                    className="px-4 py-3 rounded-2xl bg-white/10 hover:bg-white/15"
                     type="button"
                   >
-                    ✖️
+                    ↩️ Annuler
+                  </button>
+
+                  <button
+                    disabled={!canSave || saving}
+                    onClick={createRepair}
+                    className={[
+                      "px-5 py-3 rounded-2xl font-extrabold shadow-lg",
+                      canSave && !saving
+                        ? "bg-emerald-400 text-slate-950 hover:opacity-90"
+                        : "bg-white/10 text-white/40 cursor-not-allowed",
+                    ].join(" ")}
+                    type="button"
+                  >
+                    {saving ? "⏳ Création…" : "✅ Créer"}
                   </button>
                 </div>
 
-                {/* ✅ zone scrollable */}
-                <div className="p-5 space-y-4 overflow-y-auto max-h-[calc(100dvh-2rem-72px)]">
-                  {/* ... ton contenu existant (formError + inputs + textarea) ... */}
-
-                  {/* ✅ footer sticky (boutons toujours visibles) */}
-                  <div className="sticky bottom-0 pt-3 pb-2 bg-slate-900">
-                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
-                      <button
-                        onClick={closeModal}
-                        className="px-4 py-3 rounded-2xl bg-white/10 hover:bg-white/15"
-                        type="button"
-                      >
-                        ↩️ Annuler
-                      </button>
-
-                      <button
-                        disabled={!canSave || saving}
-                        onClick={createRepair}
-                        className={[
-                          "px-5 py-3 rounded-2xl font-extrabold shadow-lg",
-                          canSave && !saving
-                            ? "bg-emerald-400 text-slate-950 hover:opacity-90"
-                            : "bg-white/10 text-white/40 cursor-not-allowed",
-                        ].join(" ")}
-                        type="button"
-                      >
-                        {saving ? "⏳ Création…" : "✅ Créer"}
-                      </button>
-                    </div>
-
-                    <p className="text-xs text-white/50 mt-2">
-                      ✅ Minimum requis : Plaque + Type véhicule + Type
-                      réparation.
-                    </p>
-                  </div>
-                </div>
+                <p className="text-xs text-white/50">
+                  ✅ Minimum requis : Plaque + Type véhicule + Type réparation.
+                </p>
               </div>
             </div>
           </div>
