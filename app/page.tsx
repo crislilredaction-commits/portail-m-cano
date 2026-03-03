@@ -276,7 +276,6 @@ APE : 4520A
 
       if (error) throw error;
 
-      // refresh liste
       await fetchRepairs();
 
       setCommentMsg((prev) => ({
@@ -355,7 +354,6 @@ APE : 4520A
         return;
       }
 
-      // 1) chercher client par plate_normalized
       let clientId: string | null = null;
       const { data: foundByNorm, error: findErr } = await supabase
         .from("clients")
@@ -366,7 +364,6 @@ APE : 4520A
       if (findErr) throw findErr;
       clientId = foundByNorm?.[0]?.id ?? null;
 
-      // 2) fallback: chercher par plate
       if (!clientId) {
         const { data: foundByPlate } = await supabase
           .from("clients")
@@ -376,7 +373,6 @@ APE : 4520A
         clientId = foundByPlate?.[0]?.id ?? null;
       }
 
-      // 3) créer client si besoin
       if (!clientId) {
         const { data: insertedClient, error: insertClientErr } = await supabase
           .from("clients")
@@ -396,7 +392,6 @@ APE : 4520A
         if (insertClientErr) throw insertClientErr;
         clientId = insertedClient.id;
       } else {
-        // mise à jour douce
         const { error: updErr } = await supabase
           .from("clients")
           .update({
@@ -413,7 +408,6 @@ APE : 4520A
         if (updErr) throw updErr;
       }
 
-      // 4) créer réparation
       const { error: insertRepairErr } = await supabase.from("repairs").insert({
         client_id: clientId,
         repair_type: form.repair_type,
@@ -475,7 +469,6 @@ APE : 4520A
     return Number(computedPartsTotal) + (Number(laborCost) || 0);
   }, [computedPartsTotal, laborCost]);
 
-  /** 🔎 Trouver clientId par plaque (norm + fallback) */
   async function getClientIdForPlate(
     plateInput: string,
   ): Promise<string | null> {
@@ -501,7 +494,6 @@ APE : 4520A
     return c2?.[0]?.id ?? null;
   }
 
-  /** 🔎 Charger le dernier devis du client (utile pour ré-envoyer plus tard) */
   async function loadLatestQuoteForCurrentPlate() {
     const clientId = await getClientIdForPlate(quotePlate);
     if (!clientId) return null;
@@ -526,7 +518,6 @@ APE : 4520A
     };
   }
 
-  /** ✅ CREATION DEVIS */
   async function createQuote() {
     setQuoteMessage(null);
     if (creating) return;
@@ -540,15 +531,12 @@ APE : 4520A
         return;
       }
 
-      const platePretty = normalizePlate(quotePlate);
-
       const clientId = await getClientIdForPlate(quotePlate);
       if (!clientId) {
         setQuoteMessage("❌ Aucun client trouvé pour cette plaque.");
         return;
       }
 
-      // 1️⃣ On demande le prochain numéro à la base
       const { data: numberData, error: numberError } = await supabase.rpc(
         "generate_quote_number",
       );
@@ -560,7 +548,6 @@ APE : 4520A
 
       const quoteNumber = numberData;
 
-      // 2️⃣ On crée le devis avec ce numéro
       const { data: newQuote, error: quoteError } = await supabase
         .from("quotes")
         .insert({
@@ -571,11 +558,6 @@ APE : 4520A
         })
         .select()
         .single();
-
-      if (quoteError || !newQuote) {
-        setQuoteMessage("❌ Erreur création devis");
-        return;
-      }
 
       if (quoteError || !newQuote) {
         setQuoteMessage("❌ Erreur création devis");
@@ -666,7 +648,6 @@ APE : 4520A
     }
   }
 
-  /** ✅ ENVOI DEVIS (réutilisable même après coup) */
   async function sendQuoteEmail() {
     setQuoteMessage(null);
     if (sending) return;
@@ -674,7 +655,6 @@ APE : 4520A
     setSending(true);
 
     try {
-      // 1) Si on n’a pas lastQuote en mémoire, on le recharge depuis la DB
       let quote = lastQuote;
       if (!quote) {
         quote = await loadLatestQuoteForCurrentPlate();
@@ -693,7 +673,6 @@ APE : 4520A
         return;
       }
 
-      // 2) Si le pdfFileId manque (cas anciens), on retente depuis la DB
       if (!quote.pdfFileId) {
         const refreshed = await loadLatestQuoteForCurrentPlate();
         if (refreshed?.pdfFileId) {
@@ -760,31 +739,34 @@ APE : 4520A
     );
   }
 
-  if (!isAuthed) {
-    return null; // évite un flash de la page avant la redirection
-  }
+  if (!isAuthed) return null;
 
   return (
-    <div className="min-h-screen bg-slate-950 text-white p-6">
+    <div className="min-h-screen bg-slate-950 text-white p-4 md:p-6">
       <div className="max-w-3xl mx-auto">
+        {/* Header */}
         <div className="flex flex-col md:flex-row gap-3 items-stretch md:items-center justify-between mb-6">
-          <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex items-center gap-3">
+          {/* Cartouche - prend plus de place */}
+          <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex items-center gap-3 flex-1 min-w-0">
             <Image
               src="/logo-garage.png"
               alt="Barthaux Auto"
-              width={46}
-              height={46}
-              className="rounded-xl bg-white/10 p-1"
+              width={56}
+              height={56}
+              className="rounded-xl bg-white/10 p-1 shrink-0"
             />
-            <div>
-              <div className="font-extrabold text-lg">Barthaux Auto</div>
-              <div className="text-white/60 text-sm">Bienvenue :)</div>
+            <div className="min-w-0">
+              <div className="font-extrabold text-xl truncate">
+                Barthaux Auto
+              </div>
+              <div className="text-white/60 text-sm truncate">Bienvenue :)</div>
             </div>
           </div>
 
-          <div className="flex gap-3">
+          {/* Actions */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:flex-none">
             <button
-              className="px-4 py-3 rounded-2xl font-extrabold bg-emerald-400 text-slate-950 shadow-lg hover:opacity-90"
+              className="w-full px-4 py-3 rounded-2xl font-extrabold bg-emerald-400 text-slate-950 shadow-lg hover:opacity-90"
               onClick={() => openMecano("devis")}
               type="button"
             >
@@ -792,10 +774,8 @@ APE : 4520A
             </button>
 
             <button
-              className="px-4 py-3 rounded-2xl font-extrabold bg-white/10 border border-white/10 shadow-lg hover:bg-white/15"
-              onClick={() => {
-                setShowMecanoPanel(false);
-              }}
+              className="w-full px-4 py-3 rounded-2xl font-extrabold bg-white/10 border border-white/10 shadow-lg hover:bg-white/15"
+              onClick={() => router.push("/gestion")}
               type="button"
             >
               📊 Accès Gestion
@@ -807,7 +787,7 @@ APE : 4520A
                 router.replace("/login");
                 router.refresh();
               }}
-              className="px-4 py-3 rounded-2xl font-extrabold bg-white/10 border border-white/10 shadow-lg hover:bg-white/15"
+              className="w-full px-4 py-3 rounded-2xl font-extrabold bg-white/10 border border-white/10 shadow-lg hover:bg-white/15"
               type="button"
             >
               Déconnexion
@@ -815,15 +795,16 @@ APE : 4520A
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-4">
+        {/* Top bar */}
+        <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-4">
           <div>
             <h1 className="text-3xl font-extrabold">
               🔧 Accueil — Réparations
             </h1>
-            <p className="text-white/70 mt-1">Alors ? On s'y met ?</p>
+            <p className="text-white/70 mt-1">Alors ? On s&apos;y met ?</p>
           </div>
 
-          <div className="flex-1 max-w-md">
+          <div className="flex-1 max-w-none lg:max-w-md">
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
@@ -834,13 +815,14 @@ APE : 4520A
 
           <button
             onClick={openModal}
-            className="px-4 py-3 rounded-2xl font-extrabold bg-emerald-400 text-slate-950 shadow-lg hover:opacity-90"
+            className="w-full lg:w-auto px-4 py-3 rounded-2xl font-extrabold bg-emerald-400 text-slate-950 shadow-lg hover:opacity-90"
             type="button"
           >
             ➕ Créer une réparation
           </button>
         </div>
 
+        {/* Panel mécano */}
         {showMecanoPanel && (
           <div className="mt-4 p-5 rounded-3xl bg-white/5 border border-white/10">
             <div className="flex items-center justify-between gap-3">
@@ -1084,6 +1066,7 @@ APE : 4520A
           </div>
         )}
 
+        {/* Repairs list */}
         <div className="mt-6 space-y-4">
           {loading && <p className="text-white/70">⏳ Chargement…</p>}
 
@@ -1210,6 +1193,7 @@ APE : 4520A
                           🔵 Passer en cours
                         </button>
                       )}
+
                       {repair.status === "en_cours" && (
                         <button
                           onClick={(e) => {
@@ -1265,6 +1249,7 @@ APE : 4520A
           })}
         </div>
 
+        {/* Modal new repair */}
         {isOpen && (
           <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4">
             <div className="w-full max-w-xl rounded-3xl bg-slate-900 border border-white/10 shadow-2xl">
@@ -1364,7 +1349,7 @@ APE : 4520A
                   onChange={(e) => updateField("comment", e.target.value)}
                 />
 
-                <div className="flex items-center justify-between gap-3 pt-2">
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2">
                   <button
                     onClick={closeModal}
                     className="px-4 py-3 rounded-2xl bg-white/10 hover:bg-white/15"

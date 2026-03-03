@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase";
 import type { ReactNode } from "react";
 
-type TabKey = "dashboard" | "clients" | "devis" | "factures" | "parametres";
+type TabKey = "clients" | "devis" | "factures" | "parametres";
 
 type ClientRow = {
   id: string;
@@ -57,10 +57,8 @@ type QuoteRow = {
   folder_id: string | null;
   pdf_file_id: string | null;
 
-  // ✅ important : le bon champ d'après toi
   total_amount: number | null;
 
-  // ✅ indicateur Supabase : PDF plus à jour
   pdf_stale: boolean | null;
 
   created_at: string;
@@ -77,6 +75,56 @@ type QuoteRow = {
 };
 
 type QuoteEditDraftItem = {
+  id?: string;
+  description: string;
+  unit_price: number;
+  quantity: number;
+};
+
+type InvoiceStatus = "brouillon" | "a_envoyer" | "envoye" | "payee" | "annule";
+
+type InvoiceItemDbRow = {
+  id: string;
+  description: string | null;
+  unit_price: number | null;
+  quantity: number | null;
+};
+
+type InvoiceRow = {
+  id: string;
+  invoice_number: number;
+  client_id: string | null;
+  quote_id: string | null;
+
+  status: InvoiceStatus | string | null;
+  paid: boolean | null;
+
+  doc_url: string | null;
+  pdf_url: string | null;
+
+  doc_id: string | null;
+  folder_id: string | null;
+  pdf_file_id: string | null;
+
+  total_amount: number | null;
+  labor_cost: number | null;
+
+  // 🔥 comme pour les devis (il faut ce flag en DB idéalement)
+  pdf_stale: boolean | null;
+
+  created_at: string;
+
+  clients: {
+    first_name: string | null;
+    last_name: string | null;
+    plate: string | null;
+    email: string | null;
+  } | null;
+
+  invoice_items: InvoiceItemDbRow[];
+};
+
+type InvoiceEditDraftItem = {
   id?: string;
   description: string;
   unit_price: number;
@@ -136,8 +184,210 @@ function statusLabel(s: string | null | undefined) {
   return s || "—";
 }
 
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+// YYYY-MM-DD
+function monthStartISODate(year: number, month0: number) {
+  return `${year}-${pad2(month0 + 1)}-01`;
+}
+
+// YYYY-MM-DD (début du mois suivant)
+function nextMonthStartISODate(year: number, month0: number) {
+  const d = new Date(Date.UTC(year, month0 + 1, 1));
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth() + 1;
+  return `${y}-${pad2(m)}-01`;
+}
+
+function extractErr(e: any) {
+  // SupabaseError a parfois des props non énumérables → on force un objet simple
+  return {
+    name: e?.name,
+    message: e?.message,
+    code: e?.code,
+    details: e?.details,
+    hint: e?.hint,
+    status: e?.status,
+    raw: String(e),
+  };
+}
+
+function ParametresSection() {
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const [nextInvoice, setNextInvoice] = useState<number>(1);
+  const [nextQuote, setNextQuote] = useState<number>(1);
+
+  const [draftInvoice, setDraftInvoice] = useState<number>(1);
+  const [draftQuote, setDraftQuote] = useState<number>(1);
+
+  const loadCounters = useCallback(async () => {
+    setLoading(true);
+    setMsg(null);
+    try {
+      const { data, error } = await supabase
+        .from("numbering_counters")
+        .select("key, next_value")
+        .in("key", ["invoice", "quote"]);
+
+      if (error) throw error;
+
+      const inv =
+        (data ?? []).find((x) => x.key === "invoice")?.next_value ?? 1;
+      const quo = (data ?? []).find((x) => x.key === "quote")?.next_value ?? 1;
+
+      setNextInvoice(Number(inv));
+      setNextQuote(Number(quo));
+      setDraftInvoice(Number(inv));
+      setDraftQuote(Number(quo));
+    } catch (e: any) {
+      setMsg(`❌ ${e?.message ?? "Erreur chargement compteurs"}`);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadCounters();
+  }, [loadCounters]);
+
+  async function save() {
+    if (draftInvoice < nextInvoice) {
+      setMsg("⚠️ Le numéro facture est inférieur au prochain existant.");
+      return;
+    }
+
+    if (draftQuote < nextQuote) {
+      setMsg("⚠️ Le numéro devis est inférieur au prochain existant.");
+      return;
+    }
+    setLoading(true);
+    setMsg(null);
+    try {
+      const a = await supabase.rpc("set_counter", {
+        p_key: "invoice",
+        p_next: Number(draftInvoice || 1),
+      });
+      if (a.error) throw a.error;
+
+      const b = await supabase.rpc("set_counter", {
+        p_key: "quote",
+        p_next: Number(draftQuote || 1),
+      });
+      if (b.error) throw b.error;
+
+      setMsg(
+        `✅ Prochaine facture : F-${String(draftInvoice).padStart(6, "0")}`,
+      );
+
+      await loadCounters();
+      setMsg("✅ Compteurs mis à jour !");
+    } catch (e: any) {
+      setMsg(`❌ ${e?.message ?? "Erreur sauvegarde compteurs"}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <div className="p-5 rounded-3xl bg-white/5 border border-white/10">
+      <div className="text-xl font-extrabold">⚙️ Paramètres</div>
+      <div className="text-white/60 mt-1">
+        Compteurs globaux (devis / factures)
+      </div>
+
+      <div className="mt-5 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="p-4 rounded-2xl bg-black/30 border border-white/10">
+          <div className="text-sm text-white/70 font-bold">
+            🧾 Prochain numéro facture
+          </div>
+          <div className="text-2xl font-extrabold mt-2">
+            F-{String(nextInvoice).padStart(6, "0")}
+          </div>
+
+          <div className="mt-4 text-xs text-white/50 mb-1">
+            Reprendre factures à partir de…
+          </div>
+          <input
+            type="number"
+            step={1}
+            className="w-full px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none text-right font-extrabold"
+            value={draftInvoice}
+            onChange={(e) => setDraftInvoice(Number(e.target.value))}
+            min={1}
+          />
+        </div>
+
+        <div className="p-4 rounded-2xl bg-black/30 border border-white/10">
+          <div className="text-sm text-white/70 font-bold">
+            🧾 Prochain numéro devis
+          </div>
+          <div className="text-2xl font-extrabold mt-2">
+            D-{String(nextQuote).padStart(6, "0")}
+          </div>
+
+          <div className="mt-4 text-xs text-white/50 mb-1">
+            Reprendre devis à partir de…
+          </div>
+          <input
+            type="number"
+            className="w-full px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none text-right font-extrabold"
+            value={draftQuote}
+            onChange={(e) => setDraftQuote(Number(e.target.value))}
+            min={1}
+          />
+        </div>
+      </div>
+
+      {msg && <div className="mt-4 text-sm text-white/80">{msg}</div>}
+
+      <div className="mt-5 flex gap-2">
+        <button
+          onClick={loadCounters}
+          className="px-4 py-3 rounded-2xl bg-white/10 hover:bg-white/15 font-extrabold border border-white/10"
+          type="button"
+          disabled={loading}
+        >
+          {loading ? "⏳" : "🔄"} Rafraîchir
+        </button>
+        <button
+          onClick={() => {
+            setDraftInvoice(nextInvoice);
+            setDraftQuote(nextQuote);
+          }}
+          className="px-4 py-3 rounded-2xl bg-white/10 hover:bg-white/15 font-extrabold border border-white/10"
+          type="button"
+        >
+          ♻️ Réinitialiser
+        </button>
+
+        <button
+          onClick={save}
+          className={cn(
+            "px-5 py-3 rounded-2xl font-extrabold shadow-lg",
+            loading
+              ? "bg-white/10 text-white/40 cursor-not-allowed"
+              : "bg-emerald-400 text-slate-950 hover:opacity-90",
+          )}
+          type="button"
+          disabled={loading}
+        >
+          {loading ? "⏳ Sauvegarde…" : "✅ Enregistrer"}
+        </button>
+      </div>
+
+      <div className="mt-3 text-xs text-white/50">
+        💡 Exemple : mettre 100 → la prochaine facture sera F-000100.
+      </div>
+    </div>
+  );
+}
+
 export default function GestionPage() {
-  const [tab, setTab] = useState<TabKey>("dashboard");
+  const [tab, setTab] = useState<TabKey>("factures");
 
   // ----- CLIENTS -----
   const [clients, setClients] = useState<ClientRow[]>([]);
@@ -165,7 +415,6 @@ export default function GestionPage() {
   const [quotesLoading, setQuotesLoading] = useState(false);
   const [quotesError, setQuotesError] = useState<string | null>(null);
 
-  // états visuels par devis (anti double-clic)
   const [loadingRegen, setLoadingRegen] = useState<Record<string, boolean>>({});
   const [loadingSend, setLoadingSend] = useState<Record<string, boolean>>({});
   const [loadingConvert, setLoadingConvert] = useState<Record<string, boolean>>(
@@ -182,16 +431,71 @@ export default function GestionPage() {
     [],
   );
 
-  const [invoices, setInvoices] = useState<any[]>([]);
+  // ----- FACTURES -----
+  const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
   const [invoicesLoading, setInvoicesLoading] = useState(false);
   const [invoiceSearch, setInvoiceSearch] = useState("");
+
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedMonth, setSelectedMonth] = useState(new Date().getMonth()); // 0-11
+
+  const [onlyUnpaid, setOnlyUnpaid] = useState(false);
+  type InvoiceKpis = {
+    ca_month: number;
+    ca_previous_month: number;
+    ca_year: number;
+  };
+
+  const [invoiceKpis, setInvoiceKpis] = useState<InvoiceKpis>({
+    ca_month: 0,
+    ca_previous_month: 0,
+    ca_year: 0,
+  });
+  const [loadingInvRegen, setLoadingInvRegen] = useState<
+    Record<string, boolean>
+  >({});
+  const [loadingInvSend, setLoadingInvSend] = useState<Record<string, boolean>>(
+    {},
+  );
+
+  const [invoiceEditOpen, setInvoiceEditOpen] = useState(false);
+  const [invoiceEditing, setInvoiceEditing] = useState<InvoiceRow | null>(null);
+  const [invoiceEditSaving, setInvoiceEditSaving] = useState(false);
+  const [invoiceEditMsg, setInvoiceEditMsg] = useState<string | null>(null);
+  const [invoiceEditLabor, setInvoiceEditLabor] = useState<number>(0);
+  const [invoiceEditItems, setInvoiceEditItems] = useState<
+    InvoiceEditDraftItem[]
+  >([]);
+  const invoicesReqIdRef = useRef(0);
+
+  function monthLabel(m: number) {
+    const names = [
+      "janvier",
+      "février",
+      "mars",
+      "avril",
+      "mai",
+      "juin",
+      "juillet",
+      "août",
+      "septembre",
+      "octobre",
+      "novembre",
+      "décembre",
+    ];
+    return names[m] ?? String(m + 1);
+  }
 
   const filteredInvoices = useMemo(() => {
     const q = invoiceSearch.toLowerCase();
 
-    return invoices.filter((inv) => {
+    let list = invoices;
+
+    if (onlyUnpaid) list = list.filter((inv) => !Boolean(inv.paid));
+
+    if (!q) return list;
+
+    return list.filter((inv) => {
       const full = [
         inv.invoice_number,
         inv.client_id,
@@ -203,30 +507,7 @@ export default function GestionPage() {
 
       return full.includes(q);
     });
-  }, [invoiceSearch, invoices]);
-
-  const caMonth = filteredInvoices
-    .filter((i) => i.paid)
-    .reduce((sum, i) => sum + Number(i.total_amount || 0), 0);
-
-  const caYear = invoices
-    .filter(
-      (i) => i.paid && new Date(i.created_at).getFullYear() === selectedYear,
-    )
-    .reduce((sum, i) => sum + Number(i.total_amount || 0), 0);
-
-  const previousMonthDate = new Date(selectedYear, selectedMonth - 1, 1);
-
-  const caPreviousMonth = invoices
-    .filter((i) => {
-      if (!i.paid) return false;
-      const d = new Date(i.created_at);
-      return (
-        d.getFullYear() === previousMonthDate.getFullYear() &&
-        d.getMonth() === previousMonthDate.getMonth()
-      );
-    })
-    .reduce((sum, i) => sum + Number(i.total_amount || 0), 0);
+  }, [invoiceSearch, invoices, onlyUnpaid]);
 
   function setRowBusy(
     setter: React.Dispatch<React.SetStateAction<Record<string, boolean>>>,
@@ -236,84 +517,102 @@ export default function GestionPage() {
     setter((prev) => ({ ...prev, [id]: value }));
   }
 
-  async function fetchLatestClients() {
-    setClientsLoading(true);
-    setClientsError(null);
-    try {
-      const { data, error } = await supabase
-        .from("clients")
-        .select(
-          "id, created_at, first_name, last_name, email, phone, plate, vehicle_type, address",
-        )
-        .order("created_at", { ascending: false })
-        .limit(10);
+  const fetchLatestInvoices = useCallback(
+    async (year?: number, month0?: number) => {
+      const y = Number.isFinite(year as number)
+        ? (year as number)
+        : selectedYear;
+      const m = Number.isFinite(month0 as number)
+        ? (month0 as number)
+        : selectedMonth;
 
-      if (error) throw error;
-      setClients((data ?? []) as ClientRow[]);
-    } catch (e: any) {
-      setClientsError(e?.message ?? "Erreur chargement clients");
-      setClients([]);
-    } finally {
-      setClientsLoading(false);
-    }
-  }
+      const reqId = ++invoicesReqIdRef.current;
+      setInvoicesLoading(true);
 
-  async function fetchLatestQuotes() {
-    setQuotesLoading(true);
-    setQuotesError(null);
+      // ✅ timestamps "neutres" (SANS Z)
+      const startDate = monthStartISODate(y, m);
+      const endDate = nextMonthStartISODate(y, m);
+      const startTs = `${startDate}T00:00:00`;
+      const endTs = `${endDate}T00:00:00`;
 
-    try {
-      const { data, error } = await supabase
-        .from("quotes")
-        .select(
-          `
-          id,
-          quote_number,
-          client_id,
-          status,
-          doc_url,
-          pdf_url,
-          doc_id,
-          folder_id,
-          pdf_file_id,
-          total_amount,
-          pdf_stale,
-          created_at,
-          labor_cost,
-          clients ( first_name, last_name, plate, email ),
-          quote_items ( id, description, unit_price, quantity )
-        `,
-        )
-        .order("created_at", { ascending: false })
-        .limit(20);
+      try {
+        // 1) KPI via RPC → NON BLOQUANT
+        try {
+          const { data: kpiData, error: kpiErr } = await supabase.rpc(
+            "get_invoice_kpis",
+            { p_year: y, p_month: m + 1 },
+          );
 
-      if (error) throw error;
+          if (kpiErr) throw kpiErr;
+          if (reqId !== invoicesReqIdRef.current) return;
 
-      setQuotes((data ?? []) as any);
-    } catch (e: any) {
-      setQuotesError(e?.message ?? "Erreur chargement devis");
-      setQuotes([]);
-    } finally {
-      setQuotesLoading(false);
-    }
-  }
+          setInvoiceKpis({
+            ca_month: Number((kpiData as any)?.ca_month || 0),
+            ca_previous_month: Number((kpiData as any)?.ca_previous_month || 0),
+            ca_year: Number((kpiData as any)?.ca_year || 0),
+          });
+        } catch (kpiE: any) {
+          console.error("get_invoice_kpis failed:", {
+            y,
+            m,
+            ...extractErr(kpiE),
+          });
+          if (reqId !== invoicesReqIdRef.current) return;
+          setInvoiceKpis({ ca_month: 0, ca_previous_month: 0, ca_year: 0 });
+        }
 
-  async function fetchLatestInvoices() {
-    setInvoicesLoading(true);
+        // 2) Liste factures
+        const { data, error } = await supabase
+          .from("invoices")
+          .select(
+            `
+    id,
+    invoice_number,
+    client_id,
+    quote_id,
+    status,
+    paid,
+    doc_url,
+    pdf_url,
+    doc_id,
+    folder_id,
+    pdf_file_id,
+    total_amount,
+    labor_cost,
+    pdf_stale,
+    created_at,
 
-    const startOfMonth = new Date(selectedYear, selectedMonth, 1);
-    const endOfMonth = new Date(selectedYear, selectedMonth + 1, 1);
+    clients:clients!invoices_client_id_fkey ( first_name, last_name, plate, email ),
+    invoice_items:invoice_items!invoice_items_invoice_id_fkey ( id, description, unit_price, quantity )
+  `,
+          )
+          .gte("created_at", startTs)
+          .lt("created_at", endTs)
+          .order("created_at", { ascending: false });
 
-    const { data, error } = await supabase
-      .from("invoices")
-      .select("*")
-      .gte("created_at", startOfMonth.toISOString())
-      .lt("created_at", endOfMonth.toISOString())
-      .order("created_at", { ascending: false });
+        if (error) throw error;
+        if (reqId !== invoicesReqIdRef.current) return;
 
-    if (!error) setInvoices(data ?? []);
-    setInvoicesLoading(false);
-  }
+        setInvoices((data ?? []) as InvoiceRow[]);
+      } catch (e: any) {
+        if (reqId !== invoicesReqIdRef.current) return;
+
+        console.error("fetchLatestInvoices failed:", {
+          y,
+          m,
+          startTs,
+          endTs,
+          ...extractErr(e),
+        });
+
+        setInvoices([]);
+        // KPI déjà gérés au-dessus (on ne reset pas forcément ici)
+      } finally {
+        if (reqId === invoicesReqIdRef.current) setInvoicesLoading(false);
+      }
+    },
+    [selectedYear, selectedMonth],
+  );
 
   function openEditClient(c: ClientRow) {
     setEditingClient(c);
@@ -428,6 +727,71 @@ export default function GestionPage() {
     setQuoteEditItems((prev) => prev.filter((_, i) => i !== index));
   }
 
+  function openEditInvoice(inv: InvoiceRow) {
+    console.log("OPEN INVOICE", inv.id);
+    setInvoiceEditing(inv);
+    setInvoiceEditOpen(true);
+    setInvoiceEditMsg(null);
+    setInvoiceEditLabor(Number(inv.labor_cost || 0));
+    setInvoiceEditItems(
+      (inv.invoice_items ?? []).map((it) => ({
+        id: it.id,
+        description: safeStr(it.description),
+        unit_price: Number(it.unit_price || 0),
+        quantity: Number(it.quantity || 0),
+      })),
+    );
+
+    if ((inv.invoice_items ?? []).length === 0) {
+      setInvoiceEditItems([{ description: "", unit_price: 0, quantity: 1 }]);
+    }
+  }
+
+  function closeEditInvoice() {
+    if (invoiceEditSaving) return;
+    setInvoiceEditOpen(false);
+    setInvoiceEditing(null);
+    setInvoiceEditMsg(null);
+  }
+
+  function addEditInvoiceItem() {
+    setInvoiceEditItems((p) => [
+      ...p,
+      { description: "", unit_price: 0, quantity: 1 },
+    ]);
+  }
+
+  function updateEditInvoiceItem(
+    index: number,
+    field: "description" | "unit_price" | "quantity",
+    value: string,
+  ) {
+    setInvoiceEditItems((prev) =>
+      prev.map((it, i) =>
+        i === index
+          ? { ...it, [field]: field === "description" ? value : Number(value) }
+          : it,
+      ),
+    );
+  }
+
+  function removeEditInvoiceItem(index: number) {
+    setInvoiceEditItems((p) => p.filter((_, i) => i !== index));
+  }
+
+  const invoiceEditPartsTotal = useMemo(() => {
+    return invoiceEditItems.reduce((sum, it) => {
+      const up = Number(it.unit_price || 0);
+      const qt = Number(it.quantity || 0);
+      if (!it.description.trim()) return sum;
+      return sum + up * qt;
+    }, 0);
+  }, [invoiceEditItems]);
+
+  const invoiceEditTotal = useMemo(() => {
+    return invoiceEditPartsTotal + Number(invoiceEditLabor || 0);
+  }, [invoiceEditPartsTotal, invoiceEditLabor]);
+
   const editPartsTotal = useMemo(() => {
     return quoteEditItems.reduce((sum, it) => {
       const up = Number(it.unit_price || 0);
@@ -441,7 +805,6 @@ export default function GestionPage() {
     return editPartsTotal + Number(quoteEditLabor || 0);
   }, [editPartsTotal, quoteEditLabor]);
 
-  // ✅ sauvegarde édition devis => update quote_items + labor + total_amount + pdf_stale + refresh
   async function saveQuoteEdit() {
     if (!quoteEditing) return;
     setQuoteEditSaving(true);
@@ -453,9 +816,7 @@ export default function GestionPage() {
         .update({
           labor_cost: Number(quoteEditLabor || 0),
           total_amount: Number(editTotal || 0),
-          // on garde le statut actuel (géré par le select dans le tableau)
           status: (quoteEditing.status || "brouillon") as any,
-          // ✅ important : le PDF n’est plus fiable après édition
           pdf_stale: true,
         })
         .eq("id", quoteEditing.id);
@@ -506,7 +867,6 @@ export default function GestionPage() {
     await fetchLatestQuotes();
   }
 
-  // ✅ Re-PDF "intelligent" : tente réécriture doc + pdf, fallback vers simple pdf
   async function regeneratePdfFromGestion(q: QuoteRow) {
     setRowBusy(setLoadingRegen, q.id, true);
 
@@ -516,7 +876,6 @@ export default function GestionPage() {
         return;
       }
 
-      // data DB => payload pour réécrire le doc
       const partsTotal = (q.quote_items ?? []).reduce((sum, it) => {
         const up = Number(it.unit_price || 0);
         const qt = Number(it.quantity || 0);
@@ -552,7 +911,6 @@ export default function GestionPage() {
         },
       };
 
-      // 1) on tente la version "réécriture doc + pdf"
       let result: any = null;
       {
         const response = await fetch("/api/apps-script", {
@@ -563,7 +921,6 @@ export default function GestionPage() {
         result = await response.json();
       }
 
-      // 2) fallback si l’action n’existe pas encore côté Apps Script
       if (!result?.ok) {
         const fallbackPayload = {
           action: "regenerate_quote_pdf",
@@ -590,7 +947,6 @@ export default function GestionPage() {
         result = fallback;
       }
 
-      // update DB
       const { error } = await supabase
         .from("quotes")
         .update({
@@ -611,7 +967,6 @@ export default function GestionPage() {
     }
   }
 
-  // ✅ garantit un PDF à jour (auto régénération si stale ou pdf absent)
   async function ensureFreshPdf(q: QuoteRow): Promise<QuoteRow> {
     const need =
       Boolean(q.pdf_stale) ||
@@ -624,7 +979,6 @@ export default function GestionPage() {
 
     await regeneratePdfFromGestion(q);
 
-    // on relit la ligne depuis Supabase pour récupérer pdf_file_id/ url à jour
     const { data, error } = await supabase
       .from("quotes")
       .select(
@@ -653,7 +1007,6 @@ export default function GestionPage() {
     return data as any;
   }
 
-  // ✅ ENVOI : auto-regénère si nécessaire, puis envoie
   async function sendQuoteFromGestion(q: QuoteRow) {
     setRowBusy(setLoadingSend, q.id, true);
 
@@ -664,7 +1017,6 @@ export default function GestionPage() {
         return;
       }
 
-      // 🔥 auto régénération si nécessaire
       const fresh = await ensureFreshPdf(q);
 
       if (!fresh.pdf_file_id) {
@@ -711,27 +1063,26 @@ export default function GestionPage() {
     }
   }
 
-  async function toggleInvoicePaid(inv: any, nextPaid: boolean) {
+  async function toggleInvoicePaid(inv: InvoiceRow, nextPaid: boolean) {
     try {
       if (!inv.doc_id || !inv.folder_id) {
         alert("❌ doc_id ou folder_id manquant sur la facture");
         return;
       }
 
-      // 1️⃣ Update DB
       const nextStatus = nextPaid ? "payee" : "envoye";
 
       const { error: updateErr } = await supabase
         .from("invoices")
         .update({
           paid: nextPaid,
-          status: nextStatus,
+          status: nextPaid ? "payee" : inv.status,
+          pdf_stale: true,
         })
         .eq("id", inv.id);
 
       if (updateErr) throw updateErr;
 
-      // 2️⃣ Appel Apps Script pour régénérer PDF
       const payload = {
         action: "regenerate_invoice_pdf",
         payload: {
@@ -749,12 +1100,8 @@ export default function GestionPage() {
       });
 
       const result = await response.json();
+      if (!result.ok) throw new Error(result.error ?? "Erreur Apps Script");
 
-      if (!result.ok) {
-        throw new Error(result.error ?? "Erreur Apps Script");
-      }
-
-      // 3️⃣ Update liens PDF en base
       const { error: pdfErr } = await supabase
         .from("invoices")
         .update({
@@ -765,8 +1112,7 @@ export default function GestionPage() {
 
       if (pdfErr) throw pdfErr;
 
-      // 4️⃣ Refresh tableau
-      await fetchLatestInvoices(); // ⚠️ mets le nom exact de ta fonction
+      await fetchLatestInvoices();
     } catch (e: any) {
       alert("❌ Paiement : " + (e?.message ?? "Erreur inconnue"));
     }
@@ -787,7 +1133,6 @@ export default function GestionPage() {
     }
   }
 
-  // ✅ conversion devis -> facture (avec loading + client_id obligatoire)
   const INVOICE_TEMPLATE_ID = "1OafmqnpTgBqwAGsxA0BWlc7TJ_OKvPFvsi1d4LznPGY";
 
   async function convertQuoteToInvoice(q: QuoteRow) {
@@ -807,7 +1152,6 @@ export default function GestionPage() {
         return;
       }
 
-      // 1) numéro facture
       const { data: numData, error: numErr } = await supabase.rpc(
         "generate_invoice_number",
       );
@@ -817,7 +1161,6 @@ export default function GestionPage() {
       if (!Number.isFinite(invoiceNumber))
         throw new Error("Numéro facture invalide");
 
-      // 2) totaux depuis DB
       const partsTotal = (q.quote_items ?? []).reduce((sum, it) => {
         const up = Number(it.unit_price || 0);
         const qt = Number(it.quantity || 0);
@@ -826,7 +1169,6 @@ export default function GestionPage() {
       const labor = Number(q.labor_cost || 0);
       const total = Number(q.total_amount ?? partsTotal + labor);
 
-      // 3) créer invoice
       const { data: invInsert, error: invErr } = await supabase
         .from("invoices")
         .insert({
@@ -844,7 +1186,6 @@ export default function GestionPage() {
 
       const invoiceId = invInsert.id as string;
 
-      // 4) copier items
       const itemsToInsert = (q.quote_items ?? [])
         .filter((it) => safeStr(it.description).trim())
         .map((it) => ({
@@ -861,7 +1202,6 @@ export default function GestionPage() {
         if (itErr) throw itErr;
       }
 
-      // 5) Apps Script generate invoice (doc+pdf)
       const payload = {
         action: "generate_invoice",
         payload: {
@@ -901,7 +1241,6 @@ export default function GestionPage() {
           result.error ?? "Apps Script: erreur génération facture",
         );
 
-      // 6) update invoice
       const { error: upErr } = await supabase
         .from("invoices")
         .update({
@@ -924,6 +1263,349 @@ export default function GestionPage() {
     }
   }
 
+  async function saveInvoiceEdits() {
+    if (!invoiceEditing) return;
+
+    setInvoiceEditSaving(true);
+    setInvoiceEditMsg(null);
+
+    try {
+      const invoiceId = invoiceEditing.id;
+
+      // 1) Nettoyage lignes existantes
+      const { error: delErr } = await supabase
+        .from("invoice_items")
+        .delete()
+        .eq("invoice_id", invoiceId);
+      if (delErr) throw delErr;
+
+      // 2) Réinsérer les lignes (non vides)
+      const toInsert = invoiceEditItems
+        .filter((it) => it.description.trim())
+        .map((it) => ({
+          invoice_id: invoiceId,
+          description: it.description.trim(),
+          unit_price: Number(it.unit_price || 0),
+          quantity: Number(it.quantity || 0),
+        }));
+
+      if (toInsert.length > 0) {
+        const { error: insErr } = await supabase
+          .from("invoice_items")
+          .insert(toInsert);
+        if (insErr) throw insErr;
+      }
+
+      // 3) Recalcul total
+      const partsTotal = toInsert.reduce(
+        (acc, it) => acc + it.unit_price * it.quantity,
+        0,
+      );
+      const labor = Number(invoiceEditLabor || 0);
+      const total = partsTotal + labor;
+
+      // 4) Update invoice + pdf_stale
+      const { error: updErr } = await supabase
+        .from("invoices")
+        .update({
+          labor_cost: labor,
+          total_amount: total,
+          pdf_stale: true,
+        })
+        .eq("id", invoiceId);
+
+      if (updErr) throw updErr;
+
+      setInvoiceEditMsg("✅ Facture mise à jour !");
+      await fetchLatestInvoices(selectedYear, selectedMonth);
+      setTimeout(() => closeEditInvoice(), 250);
+    } catch (e: any) {
+      setInvoiceEditMsg(`❌ ${e?.message ?? "Erreur sauvegarde facture"}`);
+    } finally {
+      setInvoiceEditSaving(false);
+    }
+  }
+
+  async function updateInvoiceStatus(
+    invoiceId: string,
+    newStatus: InvoiceStatus,
+  ) {
+    const { error } = await supabase
+      .from("invoices")
+      .update({ status: newStatus })
+      .eq("id", invoiceId);
+
+    if (error) {
+      alert("❌ Erreur statut facture: " + error.message);
+      return;
+    }
+    await fetchLatestInvoices();
+  }
+
+  async function regenerateInvoicePdfFromGestion(inv: InvoiceRow) {
+    setRowBusy(setLoadingInvRegen, inv.id, true);
+
+    try {
+      if (!inv.doc_id || !inv.folder_id) {
+        alert("❌ doc_id ou folder_id manquant sur la facture");
+        return;
+      }
+
+      const partsTotal = (inv.invoice_items ?? []).reduce((sum, it) => {
+        const up = Number(it.unit_price || 0);
+        const qt = Number(it.quantity || 0);
+        return sum + up * qt;
+      }, 0);
+
+      const labor = Number(inv.labor_cost || 0);
+      const total = Number(inv.total_amount ?? partsTotal + labor);
+
+      // 1) tentative rewrite (doc + pdf)
+      const rewritePayload = {
+        action: "rewrite_invoice_pdf",
+        payload: {
+          docId: inv.doc_id,
+          folderId: inv.folder_id,
+          fileNameBase: `Facture ${String(inv.invoice_number).padStart(6, "0")}`,
+          invoiceNumber: inv.invoice_number,
+          date: new Date().toISOString().slice(0, 10),
+          paid: Boolean(inv.paid),
+          client: {
+            firstName: inv.clients?.first_name || "",
+            lastName: inv.clients?.last_name || "",
+            email: inv.clients?.email || "",
+            plate: inv.clients?.plate || "",
+            address: "",
+            phone: "",
+            vehicleType: "",
+          },
+          items: (inv.invoice_items ?? []).map((it) => ({
+            designation: safeStr(it.description),
+            qty: Number(it.quantity || 0),
+            unitPrice: Number(it.unit_price || 0),
+          })),
+          labor,
+          totals: { partsTotal, total },
+        },
+      };
+
+      let result: any = null;
+
+      const r1 = await fetch("/api/apps-script", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rewritePayload),
+      });
+      result = await r1.json();
+
+      // 2) fallback simple regen si action pas dispo
+      if (!result?.ok) {
+        const fallbackPayload = {
+          action: "regenerate_invoice_pdf",
+          payload: {
+            docId: inv.doc_id,
+            folderId: inv.folder_id,
+            paid: Boolean(inv.paid),
+            fileNameBase: `Facture ${String(inv.invoice_number).padStart(6, "0")}`,
+          },
+        };
+
+        const r2 = await fetch("/api/apps-script", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(fallbackPayload),
+        });
+
+        const fallback = await r2.json();
+        if (!fallback.ok)
+          throw new Error(fallback.error ?? "Apps Script: erreur PDF facture");
+        result = fallback;
+      }
+
+      const { error } = await supabase
+        .from("invoices")
+        .update({
+          pdf_url: result.pdfUrl,
+          pdf_file_id: result.pdfFileId,
+          pdf_stale: false,
+        })
+        .eq("id", inv.id);
+
+      if (error) throw error;
+
+      await fetchLatestInvoices();
+      if (result.pdfUrl) window.open(result.pdfUrl, "_blank");
+    } catch (e: any) {
+      alert("❌ " + (e?.message ?? "Erreur PDF facture"));
+    } finally {
+      setRowBusy(setLoadingInvRegen, inv.id, false);
+    }
+  }
+
+  async function ensureFreshInvoicePdf(inv: InvoiceRow): Promise<InvoiceRow> {
+    const need =
+      Boolean(inv.pdf_stale) ||
+      !inv.pdf_file_id ||
+      !inv.pdf_url ||
+      !inv.doc_id ||
+      !inv.folder_id;
+
+    if (!need) return inv;
+
+    await regenerateInvoicePdfFromGestion(inv);
+
+    const { data, error } = await supabase
+      .from("invoices")
+      .select(
+        `
+  id, invoice_number, client_id, quote_id, status, paid,
+  doc_url, pdf_url, doc_id, folder_id, pdf_file_id,
+  total_amount, labor_cost, pdf_stale, created_at,
+  clients:clients!invoices_client_id_fkey ( first_name, last_name, plate, email ),
+  invoice_items:invoice_items!invoice_items_invoice_id_fkey ( id, description, unit_price, quantity )
+`,
+      )
+
+      .eq("id", inv.id)
+      .single();
+
+    if (error) {
+      console.error("invoices select error", error);
+      throw error;
+    }
+    return data as any;
+  }
+
+  async function sendInvoiceFromGestion(inv: InvoiceRow) {
+    setRowBusy(setLoadingInvSend, inv.id, true);
+
+    try {
+      const email = inv.clients?.email || "";
+      if (!email) {
+        alert("⚠️ Le client n’a pas d’email.");
+        return;
+      }
+
+      const fresh = await ensureFreshInvoicePdf(inv);
+
+      if (!fresh.pdf_file_id) {
+        alert(
+          "❌ Impossible d’envoyer : pdf_file_id manquant même après régénération.",
+        );
+        return;
+      }
+
+      const payload = {
+        action: "send_invoice_email",
+        payload: {
+          toEmail: email,
+          invoiceNumber: fresh.invoice_number,
+          pdfFileId: fresh.pdf_file_id,
+        },
+      };
+
+      const response = await fetch("/api/apps-script", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const result = await response.json();
+      if (!result.ok) {
+        alert("❌ Apps Script: " + (result.error ?? "Erreur inconnue"));
+        return;
+      }
+
+      if (result.emailSent) {
+        await updateInvoiceStatus(fresh.id, "envoye");
+        alert("✅ Facture envoyée !");
+      } else {
+        alert(
+          "⚠️ Email non envoyé: " + (result.emailError ?? "raison inconnue"),
+        );
+      }
+    } catch (e: any) {
+      alert("❌ " + (e?.message ?? "Erreur envoi facture"));
+    } finally {
+      setRowBusy(setLoadingInvSend, inv.id, false);
+    }
+  }
+  const fetchLatestClients = useCallback(async () => {
+    setClientsLoading(true);
+    setClientsError(null);
+
+    try {
+      const { data, error } = await supabase
+        .from("clients")
+        .select(
+          `
+          id,
+          created_at,
+          first_name,
+          last_name,
+          email,
+          phone,
+          plate,
+          vehicle_type,
+          address
+        `,
+        )
+        .order("created_at", { ascending: false })
+        .limit(50);
+
+      if (error) throw error;
+
+      setClients((data ?? []) as ClientRow[]);
+    } catch (e: any) {
+      console.error("fetchLatestClients failed:", extractErr(e));
+      setClients([]);
+      setClientsError(`❌ ${e?.message ?? "Erreur chargement clients"}`);
+    } finally {
+      setClientsLoading(false);
+    }
+  }, []);
+
+  const fetchLatestQuotes = useCallback(async () => {
+    setQuotesLoading(true);
+    setQuotesError(null);
+
+    try {
+      const { data, error } = await supabase
+        .from("quotes")
+        .select(
+          `
+          id,
+          quote_number,
+          client_id,
+          status,
+          doc_url,
+          pdf_url,
+          doc_id,
+          folder_id,
+          pdf_file_id,
+          total_amount,
+          pdf_stale,
+          created_at,
+          labor_cost,
+
+          clients ( first_name, last_name, plate, email ),
+          quote_items ( id, description, unit_price, quantity )
+        `,
+        )
+        .order("created_at", { ascending: false })
+        .limit(50);
+
+      if (error) throw error;
+
+      setQuotes((data ?? []) as QuoteRow[]);
+    } catch (e: any) {
+      console.error("fetchLatestQuotes failed:", extractErr(e));
+      setQuotes([]);
+      setQuotesError(`❌ ${e?.message ?? "Erreur chargement devis"}`);
+    } finally {
+      setQuotesLoading(false);
+    }
+  }, []);
   // Charge clients onglet
   useEffect(() => {
     if (tab === "clients") fetchLatestClients();
@@ -937,8 +1619,9 @@ export default function GestionPage() {
   }, [tab]);
 
   useEffect(() => {
-    if (tab === "factures") fetchLatestInvoices();
-  }, [tab, selectedMonth, selectedYear]);
+    if (tab !== "factures") return;
+    fetchLatestInvoices(selectedYear, selectedMonth);
+  }, [tab, selectedMonth, selectedYear, fetchLatestInvoices]);
 
   const filteredLatestClients = useMemo(() => {
     const q = clientSearch.trim().toLowerCase();
@@ -964,61 +1647,59 @@ export default function GestionPage() {
     <div className="min-h-screen bg-slate-950 text-white p-6">
       <div className="max-w-6xl mx-auto">
         {/* Header + Tabs */}
-        <div className="p-4 rounded-3xl bg-white/5 border border-white/10">
-          <div className="flex flex-col md:flex-row gap-3 items-start md:items-center justify-between">
-            <div>
-              <div className="text-2xl font-extrabold">📊 Portail Gestion</div>
-              <div className="text-white/60 text-sm">
-                Dashboard • Clients • Devis • Factures • Paramètres
-              </div>
-            </div>
+        <div className="p-5 rounded-3xl bg-white/5 border border-white/10">
+          <div className="flex flex-col lg:flex-row gap-4 items-stretch lg:items-center justify-between">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="text-2xl font-extrabold truncate">
+                    📊 Portail Gestion
+                  </div>
+                  <div className="text-white/60 text-sm truncate">
+                    Clients • Devis • Factures • Paramètres
+                  </div>
+                </div>
 
-            <div className="flex flex-wrap gap-2">
-              <TabButton
-                active={tab === "dashboard"}
-                onClick={() => setTab("dashboard")}
-              >
-                📈 Dashboard
-              </TabButton>
-              <TabButton
-                active={tab === "clients"}
-                onClick={() => setTab("clients")}
-              >
-                👥 Clients
-              </TabButton>
-              <TabButton
-                active={tab === "devis"}
-                onClick={() => setTab("devis")}
-              >
-                🧾 Devis
-              </TabButton>
-              <TabButton
-                active={tab === "factures"}
-                onClick={() => setTab("factures")}
-              >
-                💳 Factures
-              </TabButton>
-              <TabButton
-                active={tab === "parametres"}
-                onClick={() => setTab("parametres")}
-              >
-                ⚙️ Paramètres
-              </TabButton>
+                <a
+                  href="/"
+                  className="shrink-0 px-4 py-3 rounded-2xl font-extrabold bg-white/10 border border-white/10 hover:bg-white/15"
+                >
+                  ↩️ Accueil
+                </a>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                <TabButton
+                  active={tab === "clients"}
+                  onClick={() => setTab("clients")}
+                >
+                  👥 Clients
+                </TabButton>
+                <TabButton
+                  active={tab === "devis"}
+                  onClick={() => setTab("devis")}
+                >
+                  🧾 Devis
+                </TabButton>
+                <TabButton
+                  active={tab === "factures"}
+                  onClick={() => setTab("factures")}
+                >
+                  💳 Factures
+                </TabButton>
+                <TabButton
+                  active={tab === "parametres"}
+                  onClick={() => setTab("parametres")}
+                >
+                  ⚙️ Paramètres
+                </TabButton>
+              </div>
             </div>
           </div>
         </div>
 
         {/* CONTENT */}
         <div className="mt-5">
-          {tab === "dashboard" && (
-            <div className="p-5 rounded-3xl bg-white/5 border border-white/10">
-              <div className="text-xl font-extrabold">📈 Dashboard</div>
-              <div className="text-white/60 mt-1">
-                Prochaine action : CA année / mois / mois dernier ✅
-              </div>
-            </div>
-          )}
-
           {tab === "clients" && (
             <div className="p-5 rounded-3xl bg-white/5 border border-white/10">
               <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
@@ -1061,50 +1742,86 @@ export default function GestionPage() {
                   )}
 
                 {!clientsLoading && filteredLatestClients.length > 0 && (
-                  <div className="overflow-hidden rounded-2xl border border-white/10">
-                    <table className="w-full text-sm">
-                      <thead className="bg-white/5 text-white/70">
-                        <tr>
-                          <th className="text-left p-3">Nom</th>
-                          <th className="text-left p-3">Plaque</th>
-                          <th className="text-left p-3">Véhicule</th>
-                          <th className="text-left p-3">Contact</th>
-                          <th className="text-left p-3">Action</th>
+                  <div className="overflow-x-auto rounded-2xl border border-white/10 mt-4">
+                    <table className="w-full text-sm table-fixed">
+                      <thead className="bg-white/5 text-white/60 uppercase tracking-wider text-[11px]">
+                        <tr className="[&>th]:px-4 [&>th]:py-3 [&>th]:font-extrabold">
+                          <th className="text-left w-[26%]">Client</th>
+                          <th className="text-left w-[16%]">Plaque</th>
+                          <th className="text-left w-[18%]">Téléphone</th>
+                          <th className="text-left w-[28%]">Email</th>
+                          <th className="text-center w-[12%]">Actions</th>
                         </tr>
                       </thead>
-                      <tbody>
-                        {filteredLatestClients.map((c) => {
-                          const name =
-                            `${safeStr(c.first_name)} ${safeStr(c.last_name)}`.trim() ||
-                            "—";
-                          return (
-                            <tr
-                              key={c.id}
-                              className="border-t border-white/10 bg-black/20"
-                            >
-                              <td className="p-3 font-bold">{name}</td>
-                              <td className="p-3">
-                                <PlateBadge plate={c.plate} />
-                              </td>
-                              <td className="p-3">{c.vehicle_type ?? "—"}</td>
-                              <td className="p-3 text-white/80">
-                                <div>{c.phone ?? "—"}</div>
-                                <div className="text-white/50 text-xs">
-                                  {c.email ?? ""}
-                                </div>
-                              </td>
-                              <td className="p-3 text-right">
-                                <button
-                                  onClick={() => openEditClient(c)}
-                                  className="px-3 py-2 rounded-xl bg-emerald-400 text-slate-950 font-extrabold hover:opacity-90"
-                                  type="button"
-                                >
-                                  ✏️ Éditer
-                                </button>
+
+                      <tbody className="divide-y divide-white/10">
+                        {clientsLoading && (
+                          <tr>
+                            <td className="px-4 py-4 text-white/70" colSpan={5}>
+                              ⏳ Chargement…
+                            </td>
+                          </tr>
+                        )}
+
+                        {!clientsLoading && clientsError && (
+                          <tr>
+                            <td className="px-4 py-4 text-red-100" colSpan={5}>
+                              ❌ {clientsError}
+                            </td>
+                          </tr>
+                        )}
+
+                        {!clientsLoading &&
+                          !clientsError &&
+                          filteredLatestClients.length === 0 && (
+                            <tr>
+                              <td
+                                className="px-4 py-4 text-white/70"
+                                colSpan={5}
+                              >
+                                Aucun client à afficher.
                               </td>
                             </tr>
-                          );
-                        })}
+                          )}
+
+                        {!clientsLoading &&
+                          !clientsError &&
+                          filteredLatestClients.map((c) => {
+                            const fullName =
+                              `${c.first_name ?? ""} ${c.last_name ?? ""}`.trim() ||
+                              "—";
+                            return (
+                              <tr
+                                key={c.id}
+                                className="bg-black/20 hover:bg-white/[0.06] transition-colors"
+                              >
+                                <td className="px-4 py-3 font-extrabold truncate">
+                                  {fullName}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <PlateBadge plate={c.plate} />
+                                </td>
+                                <td className="px-4 py-3 text-white/80">
+                                  {c.phone || "—"}
+                                </td>
+                                <td className="px-4 py-3 text-white/80 truncate">
+                                  {c.email || "—"}
+                                </td>
+                                <td className="px-4 py-3">
+                                  <div className="flex justify-center">
+                                    <button
+                                      onClick={() => openEditClient(c)}
+                                      className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 font-extrabold"
+                                      type="button"
+                                      title="Modifier"
+                                    >
+                                      ✏️
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
                       </tbody>
                     </table>
                   </div>
@@ -1373,125 +2090,273 @@ export default function GestionPage() {
           )}
 
           {tab === "factures" && (
-            <div className="p-5 rounded-3xl bg-white/5 border border-white/10 space-y-6">
+            <div className="p-5 rounded-3xl bg-white/5 border border-white/10 space-y-5">
               {/* Header */}
-              <div className="flex justify-between items-center">
+              <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
                 <div>
                   <div className="text-xl font-extrabold">💳 Factures</div>
                   <div className="text-white/60 text-sm">
                     CA basé uniquement sur les factures payées.
                   </div>
                 </div>
-                <button
-                  onClick={fetchLatestInvoices}
-                  className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 font-bold"
-                >
-                  🔄 Rafraîchir
-                </button>
+
+                <div className="flex flex-wrap gap-2 items-center">
+                  {/* Mois */}
+                  <div className="px-3 py-2 rounded-2xl bg-white/10 border border-white/10 font-bold">
+                    <select
+                      className="bg-transparent outline-none"
+                      value={selectedMonth}
+                      onChange={(e) => setSelectedMonth(Number(e.target.value))}
+                    >
+                      {Array.from({ length: 12 }).map((_, i) => (
+                        <option key={i} value={i}>
+                          {monthLabel(i)}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Année */}
+                  <div className="px-3 py-2 rounded-2xl bg-white/10 border border-white/10 font-bold">
+                    <input
+                      type="number"
+                      className="w-[90px] bg-transparent outline-none text-center"
+                      value={selectedYear}
+                      onChange={(e) =>
+                        setSelectedYear(
+                          Number(e.target.value) || new Date().getFullYear(),
+                        )
+                      }
+                    />
+                  </div>
+
+                  <button
+                    onClick={() => setOnlyUnpaid(false)}
+                    className={cn(
+                      "px-4 py-2 rounded-2xl font-extrabold border",
+                      !onlyUnpaid
+                        ? "bg-emerald-400 text-slate-950 border-emerald-300"
+                        : "bg-white/10 border-white/10 hover:bg-white/15",
+                    )}
+                    type="button"
+                  >
+                    🔄 Tout
+                  </button>
+
+                  <button
+                    onClick={() => setOnlyUnpaid(true)}
+                    className={cn(
+                      "px-4 py-2 rounded-2xl font-extrabold border",
+                      onlyUnpaid
+                        ? "bg-emerald-400 text-slate-950 border-emerald-300"
+                        : "bg-white/10 border-white/10 hover:bg-white/15",
+                    )}
+                    type="button"
+                  >
+                    Non payées
+                  </button>
+
+                  <button
+                    onClick={fetchLatestInvoices}
+                    className="px-4 py-2 rounded-2xl bg-white/10 hover:bg-white/15 font-extrabold border border-white/10"
+                    type="button"
+                  >
+                    🔄 Rafraîchir
+                  </button>
+                </div>
               </div>
 
               {/* KPI */}
-              <div className="grid md:grid-cols-4 gap-4">
-                <div className="p-4 rounded-2xl bg-emerald-400 text-slate-950">
-                  <div className="text-sm">CA du mois</div>
-                  <div className="text-2xl font-extrabold">
-                    {caMonth.toFixed(2)} €
+              <div className="flex gap-6 mt-6">
+                <div className="flex-1 p-5 rounded-2xl bg-emerald-400 text-slate-950 shadow-xl">
+                  <div className="text-sm font-semibold opacity-80">
+                    💰 CA du mois (payées)
+                  </div>
+                  <div className="text-3xl font-extrabold mt-2">
+                    {invoiceKpis.ca_month.toFixed(2)} €
                   </div>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-white/10 border border-white/10">
-                  <div className="text-sm">CA mois dernier</div>
-                  <div className="text-2xl font-extrabold">
-                    {caPreviousMonth.toFixed(2)} €
+                <div className="flex-1 p-5 rounded-2xl bg-white/5 border border-white/10 shadow-lg">
+                  <div className="text-sm font-semibold text-white/70">
+                    🧾 CA mois dernier
+                  </div>
+                  <div className="text-3xl font-extrabold mt-2">
+                    {invoiceKpis.ca_previous_month.toFixed(2)} €
                   </div>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-white/10 border border-white/10">
-                  <div className="text-sm">CA année</div>
-                  <div className="text-2xl font-extrabold">
-                    {caYear.toFixed(2)} €
+                <div className="flex-1 p-5 rounded-2xl bg-white/5 border border-white/10 shadow-lg">
+                  <div className="text-sm font-semibold text-white/70">
+                    📆 CA année (payées)
+                  </div>
+                  <div className="text-3xl font-extrabold mt-2">
+                    {invoiceKpis.ca_year.toFixed(2)} €
                   </div>
                 </div>
 
-                <div className="p-4 rounded-2xl bg-white/10 border border-white/10">
-                  <div className="text-sm">Factures affichées</div>
-                  <div className="text-2xl font-extrabold">
+                <div className="flex-1 p-5 rounded-2xl bg-white/5 border border-white/10 shadow-lg">
+                  <div className="text-sm font-semibold text-white/70">
+                    📄 Factures affichées
+                  </div>
+                  <div className="text-3xl font-extrabold mt-2">
                     {filteredInvoices.length}
                   </div>
                 </div>
               </div>
 
+              <div className="flex gap-6 mt-6 mb-8"></div>
+
               {/* Recherche */}
               <input
                 value={invoiceSearch}
                 onChange={(e) => setInvoiceSearch(e.target.value)}
-                placeholder="🔎 Recherche..."
-                className="w-full px-4 py-3 rounded-2xl bg-white/5 border border-white/10 outline-none"
+                placeholder="🔎 Recherche (num, statut, montant...)"
+                className="w-full px-4 py-4 rounded-2xl bg-white/5 border border-white/10 outline-none mb-8"
               />
+
+              <div className="overflow-x-auto rounded-2xl border border-white/10 mt-2"></div>
 
               {/* Table */}
               <div className="overflow-x-auto rounded-2xl border border-white/10">
-                <table className="w-full text-sm">
+                <table className="w-full text-sm table-fixed">
+                  <colgroup>
+                    <col className="w-[18%]" />
+                    <col className="w-[15%]" />
+                    <col className="w-[27%]" />
+                    <col className="w-[10%]" />
+                    <col className="w-[30%]" />
+                  </colgroup>
+
                   <thead className="bg-white/5 text-white/70">
-                    <tr>
-                      <th className="p-3 text-left">Facture</th>
-                      <th className="p-3 text-right">Total</th>
-                      <th className="p-3 text-left">Statut</th>
-                      <th className="p-3 text-left">Payé</th>
-                      <th className="p-3 text-left">PDF</th>
+                    <tr className="text-sm font-bold">
+                      <th className="px-4 py-3 text-left">Facture</th>
+                      <th className="px-4 py-3 text-right">Total</th>
+                      <th className="px-4 py-3 text-left">Statut</th>
+                      <th className="px-4 py-3 text-center">Payé</th>
+                      <th className="px-4 py-3 text-center">Actions</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredInvoices.map((inv) => (
-                      <tr key={inv.id} className="border-t border-white/10">
-                        <td className="p-3 font-bold">
-                          F-{String(inv.invoice_number).padStart(6, "0")}
-                        </td>
-
-                        <td className="p-3 text-right font-extrabold">
-                          {Number(inv.total_amount || 0).toFixed(2)} €
-                        </td>
-
-                        <td className="p-3">{inv.status}</td>
-
-                        <td className="p-3">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(inv.paid)}
-                            onChange={(e) =>
-                              toggleInvoicePaid(inv, e.target.checked)
-                            }
-                            className="h-5 w-5 accent-emerald-400"
-                          />
-                        </td>
-
-                        <td className="p-3">
-                          {inv.pdf_url && (
-                            <button
-                              onClick={() => window.open(inv.pdf_url, "_blank")}
-                              className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 font-bold"
-                            >
-                              📄 PDF
-                            </button>
-                          )}
+                    {invoicesLoading && (
+                      <tr>
+                        <td className="p-4 text-white/70" colSpan={5}>
+                          ⏳ Chargement…
                         </td>
                       </tr>
-                    ))}
+                    )}
+
+                    {!invoicesLoading && filteredInvoices.length === 0 && (
+                      <tr>
+                        <td className="p-4 text-white/70" colSpan={5}>
+                          Aucune facture à afficher.
+                        </td>
+                      </tr>
+                    )}
+
+                    {!invoicesLoading &&
+                      filteredInvoices.map((inv) => (
+                        <tr
+                          key={inv.id}
+                          className="border-t border-white/10 bg-black/20"
+                        >
+                          <td className="p-3 font-bold">
+                            F-{String(inv.invoice_number).padStart(6, "0")}
+                          </td>
+
+                          <td className="p-3 text-right font-extrabold">
+                            {Number(inv.total_amount || 0).toFixed(2)} €
+                          </td>
+
+                          <td className="p-3">
+                            <select
+                              value={(inv.status as any) || "brouillon"}
+                              onChange={(e) =>
+                                updateInvoiceStatus(
+                                  inv.id,
+                                  e.target.value as InvoiceStatus,
+                                )
+                              }
+                              className="w-full px-3 py-2 rounded-xl bg-black/5 border border-white/10 outline-none font-bold"
+                            >
+                              <option value="brouillon">📝 Brouillon</option>
+                              <option value="a_envoyer">🟠 À envoyer</option>
+                              <option value="envoye">✉️ Envoyée</option>
+                              <option value="payee">✅ Payée</option>
+                              <option value="annule">🚫 Annulée</option>
+                            </select>
+                          </td>
+
+                          <td className="px-4 py-3 text-center">
+                            <div className="flex justify-center">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(inv.paid)}
+                                onChange={(e) =>
+                                  toggleInvoicePaid(inv, e.target.checked)
+                                }
+                                className="h-5 w-5 accent-emerald-400"
+                              />
+                            </div>
+                          </td>
+
+                          <td className="px-4 py-3 text-center">
+                            <div className="flex justify-center gap-2">
+                              <button
+                                onClick={() => openEditInvoice(inv)}
+                                className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 font-bold"
+                                type="button"
+                              >
+                                ✏️
+                              </button>
+
+                              <button
+                                onClick={() =>
+                                  regenerateInvoicePdfFromGestion(inv)
+                                }
+                                className="px-3 py-2 rounded-xl bg-sky-400 text-slate-950 hover:opacity-90 font-bold"
+                                type="button"
+                                disabled={Boolean(loadingInvRegen[inv.id])}
+                              >
+                                {loadingInvRegen[inv.id] ? "⏳ PDF…" : "🔁 PDF"}
+                              </button>
+
+                              <button
+                                onClick={() => sendInvoiceFromGestion(inv)}
+                                className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15 font-bold"
+                                type="button"
+                                disabled={Boolean(loadingInvSend[inv.id])}
+                                title="Auto-regénère le PDF si besoin, puis envoie"
+                              >
+                                {loadingInvSend[inv.id] ? "⏳ Mail…" : "📧"}
+                              </button>
+
+                              {inv.pdf_url ? (
+                                <button
+                                  onClick={() =>
+                                    window.open(inv.pdf_url, "_blank")
+                                  }
+                                  className="px-3 py-2 rounded-xl bg-emerald-400 text-slate-950 hover:opacity-90 font-bold"
+                                  type="button"
+                                >
+                                  📄
+                                </button>
+                              ) : (
+                                <span className="text-white/40 px-2 py-2">
+                                  —
+                                </span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
                   </tbody>
                 </table>
               </div>
             </div>
           )}
 
-          {tab === "parametres" && (
-            <div className="p-5 rounded-3xl bg-white/5 border border-white/10">
-              <div className="text-xl font-extrabold">⚙️ Paramètres</div>
-              <div className="text-white/60 mt-1">
-                Prochaine action : régler “reprendre numéros devis/factures à
-                partir de …”
-              </div>
-            </div>
-          )}
+          {tab === "parametres" && <ParametresSection />}
         </div>
 
         {/* MODAL EDIT CLIENT */}
@@ -1787,6 +2652,178 @@ export default function GestionPage() {
                 <div className="text-xs text-white/50">
                   💡 Après sauvegarde : total mis à jour + pdf_stale = true
                   (donc envoi auto-PDF) ✅
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        {/* MODAL EDIT FACTURE */}
+        {invoiceEditOpen && invoiceEditing && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center p-4 z-50">
+            <div className="w-full max-w-3xl rounded-3xl bg-slate-900 border border-white/10 shadow-2xl">
+              <div className="p-5 border-b border-white/10 flex items-center justify-between">
+                <div>
+                  <div className="text-xl font-extrabold">
+                    ✏️ Modifier facture F-
+                    {String(invoiceEditing.invoice_number).padStart(6, "0")}
+                  </div>
+                  <div className="text-white/60 text-sm">
+                    {invoiceEditing.clients?.first_name}{" "}
+                    {invoiceEditing.clients?.last_name} •{" "}
+                    {invoiceEditing.clients?.plate}
+                  </div>
+                </div>
+
+                <button
+                  onClick={closeEditInvoice}
+                  className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/15"
+                  type="button"
+                  disabled={invoiceEditSaving}
+                >
+                  ✖️
+                </button>
+              </div>
+
+              <div className="p-5 space-y-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                    <div className="text-sm font-bold text-white/70">
+                      Main d’œuvre (€)
+                    </div>
+                    <input
+                      type="number"
+                      className="mt-2 w-full px-4 py-3 rounded-2xl bg-black/30 border border-white/10 text-right font-extrabold"
+                      value={invoiceEditLabor}
+                      onChange={(e) =>
+                        setInvoiceEditLabor(Number(e.target.value))
+                      }
+                    />
+                  </div>
+
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                    <div className="flex justify-between text-sm text-white/70">
+                      <span>Total pièces</span>
+                      <span className="font-bold">
+                        {invoiceEditPartsTotal.toFixed(2)} €
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-sm text-white/70 mt-1">
+                      <span>Main d’œuvre</span>
+                      <span className="font-bold">
+                        {Number(invoiceEditLabor || 0).toFixed(2)} €
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-base mt-2">
+                      <span className="font-extrabold">TOTAL</span>
+                      <span className="font-extrabold">
+                        {invoiceEditTotal.toFixed(2)} €
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="p-4 rounded-2xl bg-black/30 border border-white/10">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="font-extrabold">Pièces</div>
+                    <button
+                      onClick={addEditInvoiceItem}
+                      className="px-3 py-2 rounded-xl bg-white/10 border border-white/10 hover:bg-white/15 font-bold"
+                      type="button"
+                    >
+                      ➕ Ajouter
+                    </button>
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-12 gap-2 text-xs text-white/60 px-1">
+                    <div className="col-span-6">Désignation</div>
+                    <div className="col-span-2 text-right">Qté</div>
+                    <div className="col-span-3 text-right">€ unitaire</div>
+                    <div className="col-span-1 text-right"> </div>
+                  </div>
+
+                  <div className="mt-2 space-y-2">
+                    {invoiceEditItems.map((item, index) => (
+                      <div key={index} className="grid grid-cols-12 gap-2">
+                        <input
+                          className="col-span-6 px-3 py-2 rounded-xl bg-white/5 border border-white/10"
+                          placeholder="Désignation (ex: Plaquettes)"
+                          value={item.description}
+                          onChange={(e) =>
+                            updateEditInvoiceItem(
+                              index,
+                              "description",
+                              e.target.value,
+                            )
+                          }
+                        />
+                        <input
+                          type="number"
+                          className="col-span-2 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-right"
+                          value={item.quantity}
+                          onChange={(e) =>
+                            updateEditInvoiceItem(
+                              index,
+                              "quantity",
+                              e.target.value,
+                            )
+                          }
+                        />
+                        <input
+                          type="number"
+                          className="col-span-3 px-3 py-2 rounded-xl bg-white/5 border border-white/10 text-right"
+                          value={item.unit_price}
+                          onChange={(e) =>
+                            updateEditInvoiceItem(
+                              index,
+                              "unit_price",
+                              e.target.value,
+                            )
+                          }
+                        />
+                        <button
+                          onClick={() => removeEditInvoiceItem(index)}
+                          className="col-span-1 px-2 py-2 rounded-xl bg-red-500/80 text-white font-bold hover:opacity-90"
+                          type="button"
+                          title="Supprimer la ligne"
+                        >
+                          ✖
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {invoiceEditMsg && (
+                  <div className="text-sm text-white/80">{invoiceEditMsg}</div>
+                )}
+
+                <div className="flex items-center justify-between gap-3 pt-2">
+                  <button
+                    onClick={closeEditInvoice}
+                    className="px-4 py-3 rounded-2xl bg-white/10 hover:bg-white/15"
+                    type="button"
+                    disabled={invoiceEditSaving}
+                  >
+                    ↩️ Annuler
+                  </button>
+
+                  <button
+                    onClick={saveInvoiceEdits}
+                    className={cn(
+                      "px-5 py-3 rounded-2xl font-extrabold shadow-lg",
+                      invoiceEditSaving
+                        ? "bg-white/10 text-white/40 cursor-not-allowed"
+                        : "bg-emerald-400 text-slate-950 hover:opacity-90",
+                    )}
+                    type="button"
+                    disabled={invoiceEditSaving}
+                  >
+                    {invoiceEditSaving ? "⏳ Sauvegarde…" : "✅ Enregistrer"}
+                  </button>
+                </div>
+
+                <div className="text-xs text-white/50">
+                  💡 Après sauvegarde : total mis à jour + pdf_stale = true ✅
                 </div>
               </div>
             </div>
