@@ -114,12 +114,7 @@ type InvoiceRow = {
 
   created_at: string;
 
-  clients: {
-    first_name: string | null;
-    last_name: string | null;
-    plate: string | null;
-    email: string | null;
-  } | null;
+  clients: ClientMini | null;
 
   invoice_items: InvoiceItemDbRow[];
 };
@@ -130,6 +125,20 @@ type InvoiceEditDraftItem = {
   unit_price: number;
   quantity: number;
 };
+
+type ClientMini = {
+  first_name: string | null;
+  last_name: string | null;
+  plate: string | null;
+  email: string | null;
+};
+
+type MaybeOne<T> = T | T[] | null | undefined;
+
+function one<T>(v: MaybeOne<T>): T | null {
+  if (!v) return null;
+  return Array.isArray(v) ? (v[0] ?? null) : v;
+}
 
 function safeStr(v: string | null | undefined) {
   return (v ?? "").toString();
@@ -593,7 +602,15 @@ export default function GestionPage() {
         if (error) throw error;
         if (reqId !== invoicesReqIdRef.current) return;
 
-        setInvoices((data ?? []) as InvoiceRow[]);
+        const rows = (data ?? []) as any[];
+
+        const normalized: InvoiceRow[] = rows.map((r) => ({
+          ...r,
+          clients: one<ClientMini>(r.clients),
+          invoice_items: Array.isArray(r.invoice_items) ? r.invoice_items : [],
+        }));
+
+        setInvoices(normalized);
       } catch (e: any) {
         if (reqId !== invoicesReqIdRef.current) return;
 
@@ -967,44 +984,46 @@ export default function GestionPage() {
     }
   }
 
-  async function ensureFreshPdf(q: QuoteRow): Promise<QuoteRow> {
+  async function ensureFreshInvoicePdf(inv: InvoiceRow): Promise<InvoiceRow> {
     const need =
-      Boolean(q.pdf_stale) ||
-      !q.pdf_file_id ||
-      !q.pdf_url ||
-      !q.doc_id ||
-      !q.folder_id;
+      Boolean(inv.pdf_stale) ||
+      !inv.pdf_file_id ||
+      !inv.pdf_url ||
+      !inv.doc_id ||
+      !inv.folder_id;
 
-    if (!need) return q;
+    if (!need) return inv;
 
-    await regeneratePdfFromGestion(q);
+    await regenerateInvoicePdfFromGestion(inv);
 
     const { data, error } = await supabase
-      .from("quotes")
+      .from("invoices")
       .select(
         `
-        id,
-        quote_number,
-        client_id,
-        status,
-        doc_url,
-        pdf_url,
-        doc_id,
-        folder_id,
-        pdf_file_id,
-        total_amount,
-        pdf_stale,
-        created_at,
-        labor_cost,
-        clients ( first_name, last_name, plate, email ),
-        quote_items ( id, description, unit_price, quantity )
+        id, invoice_number, client_id, quote_id, status, paid,
+        doc_url, pdf_url, doc_id, folder_id, pdf_file_id,
+        total_amount, labor_cost, pdf_stale, created_at,
+        clients:clients!invoices_client_id_fkey ( first_name, last_name, plate, email ),
+        invoice_items:invoice_items!invoice_items_invoice_id_fkey ( id, description, unit_price, quantity )
       `,
       )
-      .eq("id", q.id)
+      .eq("id", inv.id)
       .single();
 
-    if (error) throw error;
-    return data as any;
+    if (error) {
+      console.error("invoices select error", error);
+      throw error;
+    }
+
+    const row = data as any;
+
+    const normalized: InvoiceRow = {
+      ...row,
+      clients: one<ClientMini>(row.clients),
+      invoice_items: Array.isArray(row.invoice_items) ? row.invoice_items : [],
+    };
+
+    return normalized;
   }
 
   async function sendQuoteFromGestion(q: QuoteRow) {
@@ -1017,7 +1036,7 @@ export default function GestionPage() {
         return;
       }
 
-      const fresh = await ensureFreshPdf(q);
+      const fresh = await ensureFreshQuotePdf(q);
 
       if (!fresh.pdf_file_id) {
         alert(
@@ -1442,40 +1461,6 @@ export default function GestionPage() {
     }
   }
 
-  async function ensureFreshInvoicePdf(inv: InvoiceRow): Promise<InvoiceRow> {
-    const need =
-      Boolean(inv.pdf_stale) ||
-      !inv.pdf_file_id ||
-      !inv.pdf_url ||
-      !inv.doc_id ||
-      !inv.folder_id;
-
-    if (!need) return inv;
-
-    await regenerateInvoicePdfFromGestion(inv);
-
-    const { data, error } = await supabase
-      .from("invoices")
-      .select(
-        `
-  id, invoice_number, client_id, quote_id, status, paid,
-  doc_url, pdf_url, doc_id, folder_id, pdf_file_id,
-  total_amount, labor_cost, pdf_stale, created_at,
-  clients:clients!invoices_client_id_fkey ( first_name, last_name, plate, email ),
-  invoice_items:invoice_items!invoice_items_invoice_id_fkey ( id, description, unit_price, quantity )
-`,
-      )
-
-      .eq("id", inv.id)
-      .single();
-
-    if (error) {
-      console.error("invoices select error", error);
-      throw error;
-    }
-    return data as any;
-  }
-
   async function sendInvoiceFromGestion(inv: InvoiceRow) {
     setRowBusy(setLoadingInvSend, inv.id, true);
 
@@ -1530,6 +1515,55 @@ export default function GestionPage() {
       setRowBusy(setLoadingInvSend, inv.id, false);
     }
   }
+
+  async function ensureFreshQuotePdf(q: QuoteRow): Promise<QuoteRow> {
+    const need =
+      Boolean(q.pdf_stale) ||
+      !q.pdf_file_id ||
+      !q.pdf_url ||
+      !q.doc_id ||
+      !q.folder_id;
+
+    if (!need) return q;
+
+    await regeneratePdfFromGestion(q);
+
+    const { data, error } = await supabase
+      .from("quotes")
+      .select(
+        `
+        id,
+        quote_number,
+        client_id,
+        status,
+        doc_url,
+        pdf_url,
+        doc_id,
+        folder_id,
+        pdf_file_id,
+        total_amount,
+        pdf_stale,
+        created_at,
+        labor_cost,
+        clients:clients!quotes_client_id_fkey ( first_name, last_name, plate, email ),
+        quote_items:quote_items!quote_items_quote_id_fkey ( id, description, unit_price, quantity )
+      `,
+      )
+      .eq("id", q.id)
+      .single();
+
+    if (error) throw error;
+
+    const row = data as any;
+
+    const normalized: QuoteRow = {
+      ...row,
+      clients: one<ClientMini>(row.clients),
+      quote_items: Array.isArray(row.quote_items) ? row.quote_items : [],
+    };
+
+    return normalized;
+  }
   const fetchLatestClients = useCallback(async () => {
     setClientsLoading(true);
     setClientsError(null);
@@ -1574,30 +1608,38 @@ export default function GestionPage() {
         .from("quotes")
         .select(
           `
-          id,
-          quote_number,
-          client_id,
-          status,
-          doc_url,
-          pdf_url,
-          doc_id,
-          folder_id,
-          pdf_file_id,
-          total_amount,
-          pdf_stale,
-          created_at,
-          labor_cost,
+  id,
+  quote_number,
+  client_id,
+  status,
+  doc_url,
+  pdf_url,
+  doc_id,
+  folder_id,
+  pdf_file_id,
+  total_amount,
+  pdf_stale,
+  created_at,
+  labor_cost,
 
-          clients ( first_name, last_name, plate, email ),
-          quote_items ( id, description, unit_price, quantity )
-        `,
+  clients:clients!quotes_client_id_fkey ( first_name, last_name, plate, email ),
+  quote_items:quote_items!quote_items_quote_id_fkey ( id, description, unit_price, quantity )
+`,
         )
         .order("created_at", { ascending: false })
         .limit(50);
 
       if (error) throw error;
 
-      setQuotes((data ?? []) as QuoteRow[]);
+      const rows = (data ?? []) as any[];
+
+      const normalized: QuoteRow[] = rows.map((r) => ({
+        ...r,
+        clients: one<ClientMini>(r.clients),
+        quote_items: Array.isArray(r.quote_items) ? r.quote_items : [],
+      }));
+
+      setQuotes(normalized);
     } catch (e: any) {
       console.error("fetchLatestQuotes failed:", extractErr(e));
       setQuotes([]);
@@ -2148,7 +2190,7 @@ export default function GestionPage() {
                   </button>
 
                   <button
-                    onClick={fetchLatestInvoices}
+                    onClick={() => fetchLatestInvoices()}
                     className="px-4 py-2 rounded-2xl bg-white/10 hover:bg-white/15 font-extrabold border border-white/10"
                     type="button"
                   >
@@ -2324,9 +2366,10 @@ export default function GestionPage() {
 
                               {inv.pdf_url ? (
                                 <button
-                                  onClick={() =>
-                                    window.open(inv.pdf_url, "_blank")
-                                  }
+                                  onClick={() => {
+                                    const url = inv.pdf_url;
+                                    if (url) window.open(url, "_blank");
+                                  }}
                                   className="px-3 py-2 rounded-xl bg-emerald-400 text-slate-950 hover:opacity-90 font-bold"
                                   type="button"
                                 >
