@@ -1655,9 +1655,6 @@ export default function GestionPage() {
                   <div className="text-2xl font-extrabold truncate">
                     📊 Portail Gestion
                   </div>
-                  <div className="text-white/60 text-sm truncate">
-                    Clients • Devis • Factures • Paramètres
-                  </div>
                 </div>
 
                 <a
@@ -1850,9 +1847,6 @@ export default function GestionPage() {
               <div className="flex items-center justify-between gap-3">
                 <div>
                   <div className="text-xl font-extrabold">🧾 Devis</div>
-                  <div className="text-white/60 text-sm">
-                    Statut + édition + PDF auto + envoi + conversion facture ✅
-                  </div>
                 </div>
 
                 <button
@@ -2095,9 +2089,6 @@ export default function GestionPage() {
               <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
                 <div>
                   <div className="text-xl font-extrabold">💳 Factures</div>
-                  <div className="text-white/60 text-sm">
-                    CA basé uniquement sur les factures payées.
-                  </div>
                 </div>
 
                 <div className="flex flex-wrap gap-2 items-center">

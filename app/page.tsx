@@ -828,9 +828,6 @@ APE : 4520A
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-xl font-extrabold">🔧 Accès Mécano</div>
-                <div className="text-white/60 text-sm">
-                  Devis • Infos entreprise (sans toucher aux réparations)
-                </div>
               </div>
               <button
                 onClick={() => setShowMecanoPanel(false)}
@@ -873,9 +870,6 @@ APE : 4520A
               <div className="mt-4 p-4 rounded-2xl bg-black/30 border border-white/10 space-y-4">
                 <div>
                   <div className="font-extrabold text-lg">🧾 Nouveau devis</div>
-                  <div className="text-white/50 text-xs mt-1">
-                    (Template Drive prêt : {TEMPLATE_DEVIS_ID})
-                  </div>
                 </div>
 
                 <div className="space-y-2">
