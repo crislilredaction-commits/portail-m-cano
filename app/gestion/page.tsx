@@ -888,19 +888,77 @@ export default function GestionPage() {
     setRowBusy(setLoadingRegen, q.id, true);
 
     try {
-      if (!q.doc_id || !q.folder_id) {
-        alert("❌ doc_id ou folder_id manquant");
-        return;
-      }
-
       const partsTotal = (q.quote_items ?? []).reduce((sum, it) => {
         const up = Number(it.unit_price || 0);
         const qt = Number(it.quantity || 0);
         return sum + up * qt;
       }, 0);
+
       const labor = Number(q.labor_cost || 0);
       const total = Number(q.total_amount ?? partsTotal + labor);
 
+      // ✅ Ancien devis sans doc_id/folder_id : on recrée un devis propre
+      if (!q.doc_id || !q.folder_id) {
+        const generatePayload = {
+          action: "generate_quote",
+          payload: {
+            folderId: q.folder_id || undefined,
+            fileNameBase: `Devis ${q.quote_number}`,
+            quoteNumber: q.quote_number,
+            date: new Date().toISOString().slice(0, 10),
+            client: {
+              firstName: q.clients?.first_name || "",
+              lastName: q.clients?.last_name || "",
+              email: q.clients?.email || "",
+              phone: "",
+              address: "",
+              plate: q.clients?.plate || "",
+              vehicleType: "",
+            },
+            items: (q.quote_items ?? []).map((it) => ({
+              designation: safeStr(it.description),
+              qty: Number(it.quantity || 0),
+              unitPrice: Number(it.unit_price || 0),
+            })),
+            labor,
+            totals: { partsTotal, total },
+          },
+        };
+
+        const response = await fetch("/api/apps-script", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(generatePayload),
+        });
+
+        const result = await response.json();
+
+        if (!result.ok) {
+          throw new Error(
+            result.error ?? "Apps Script: erreur génération devis",
+          );
+        }
+
+        const { error } = await supabase
+          .from("quotes")
+          .update({
+            doc_id: result.docId,
+            doc_url: result.docUrl,
+            folder_id: result.folderId,
+            pdf_url: result.pdfUrl,
+            pdf_file_id: result.pdfFileId,
+            pdf_stale: false,
+          })
+          .eq("id", q.id);
+
+        if (error) throw error;
+
+        await fetchLatestQuotes();
+        if (result.pdfUrl) window.open(result.pdfUrl, "_blank");
+        return;
+      }
+
+      // ✅ Devis récent avec doc_id/folder_id : on régénère le PDF
       const rewritePayload = {
         action: "rewrite_quote_pdf",
         payload: {
@@ -928,15 +986,13 @@ export default function GestionPage() {
         },
       };
 
-      let result: any = null;
-      {
-        const response = await fetch("/api/apps-script", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(rewritePayload),
-        });
-        result = await response.json();
-      }
+      const response = await fetch("/api/apps-script", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(rewritePayload),
+      });
+
+      let result = await response.json();
 
       if (!result?.ok) {
         const fallbackPayload = {
@@ -949,19 +1005,17 @@ export default function GestionPage() {
           },
         };
 
-        const response = await fetch("/api/apps-script", {
+        const fallbackResponse = await fetch("/api/apps-script", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(fallbackPayload),
         });
 
-        const fallback = await response.json();
-        if (!fallback.ok) {
-          throw new Error(
-            fallback.error ?? "Apps Script: erreur génération PDF",
-          );
+        result = await fallbackResponse.json();
+
+        if (!result.ok) {
+          throw new Error(result.error ?? "Apps Script: erreur génération PDF");
         }
-        result = fallback;
       }
 
       const { error } = await supabase
