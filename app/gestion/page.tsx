@@ -264,15 +264,6 @@ function ParametresSection() {
   }, [loadCounters]);
 
   async function save() {
-    if (draftInvoice < nextInvoice) {
-      setMsg("⚠️ Le numéro facture est inférieur au prochain existant.");
-      return;
-    }
-
-    if (draftQuote < nextQuote) {
-      setMsg("⚠️ Le numéro devis est inférieur au prochain existant.");
-      return;
-    }
     setLoading(true);
     setMsg(null);
     try {
