@@ -903,6 +903,9 @@ export default function GestionPage() {
           action: "generate_quote",
           payload: {
             folderId: q.folder_id || undefined,
+            clientFolderName:
+              `${q.clients?.last_name || ""} ${q.clients?.first_name || ""}`.trim() ||
+              `Client ${q.quote_number}`,
             fileNameBase: `Devis ${q.quote_number}`,
             quoteNumber: q.quote_number,
             date: new Date().toISOString().slice(0, 10),
