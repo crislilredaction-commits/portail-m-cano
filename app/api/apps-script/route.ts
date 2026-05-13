@@ -4,7 +4,7 @@ export const runtime = "nodejs"; // ✅ force Node runtime (évite Edge surprise
 
 // URL Apps Script (ok en dur pour l’instant)
 const APPS_SCRIPT_URL =
-  "https://script.google.com/macros/s/AKfycbwa3LKCt2-OwsUAZ_SlAwZ7meEGufR97ijRVim9QYw-53xKinewOR_Um0dueeIISXOXww/exec";
+  "https://script.google.com/macros/s/AKfycbxLMOMYSa41cnjr6lxH1LAMVJNITJZ_4kTpTfFiELNSFgxxvwx3W5Jfzlf3HTSHkdUx/exec";
 
 function json(obj: any, status = 200) {
   return NextResponse.json(obj, { status });
