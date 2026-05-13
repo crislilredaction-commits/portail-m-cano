@@ -1426,7 +1426,7 @@ export default function GestionPage() {
       }, 0);
 
       const labor = Number(inv.labor_cost || 0);
-      const dbTotal = Number(q.total_amount || 0);
+      const dbTotal = Number(inv.total_amount || 0);
       const total = dbTotal > 0 ? dbTotal : partsTotal + labor;
 
       // 1) tentative rewrite (doc + pdf)
