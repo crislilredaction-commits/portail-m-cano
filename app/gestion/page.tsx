@@ -1234,7 +1234,8 @@ export default function GestionPage() {
         return sum + up * qt;
       }, 0);
       const labor = Number(q.labor_cost || 0);
-      const total = Number(q.total_amount ?? partsTotal + labor);
+      const dbTotal = Number(q.total_amount || 0);
+      const total = dbTotal > 0 ? dbTotal : partsTotal + labor;
 
       const { data: invInsert, error: invErr } = await supabase
         .from("invoices")
@@ -1425,7 +1426,8 @@ export default function GestionPage() {
       }, 0);
 
       const labor = Number(inv.labor_cost || 0);
-      const total = Number(inv.total_amount ?? partsTotal + labor);
+      const dbTotal = Number(q.total_amount || 0);
+      const total = dbTotal > 0 ? dbTotal : partsTotal + labor;
 
       // 1) tentative rewrite (doc + pdf)
       const rewritePayload = {
@@ -2085,11 +2087,8 @@ export default function GestionPage() {
                         const fallbackTotal =
                           fallbackParts + Number(q.labor_cost || 0);
 
-                        const total = Number(
-                          q.total_amount != null
-                            ? q.total_amount
-                            : fallbackTotal,
-                        );
+                        const dbTotal = Number(q.total_amount || 0);
+                        const total = dbTotal > 0 ? dbTotal : fallbackTotal;
 
                         const isRegen = Boolean(loadingRegen[q.id]);
                         const isSend = Boolean(loadingSend[q.id]);
